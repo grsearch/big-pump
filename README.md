@@ -98,3 +98,13 @@ Linux 前台生产服务分别运行 pnpm collector 和 pnpm start:dashboard，�
 
 ### 行情缺失与迁移池
 CA 批查可能只返回毕业前的 Pump.fun 池。系统缺少有效迁移池 FDV/LP 时会按链上事件保存的 pool 地址批量直查；始终同时核对 Solana 链、CA 和池地址，不用旧池或同名币代替。Dashboard 显示逐币行情错误。行情缺失、失败、过期或 FDV 低于退出门槛时不调用该币 X 搜索；连续 5 分钟没有有效行情进入数据休眠，保留低频行情查询。行情恢复且 FDV 达标时可恢复观察；已低于门槛则继续休眠。正常观察币仍按默认连续 3 分钟低 FDV 进入休眠。
+
+### Stonk 并行监控（首版）
+在已有 .env 中加入 ENABLE_STONK=true 后重启采集器。需要已配置的 Helius；不需要 Stonk API key。该开关只开启发现与核验，不改变 ENABLE_X、ENABLE_AI 或总预算。
+- Pump 监听保留，另订阅 Stonk 两个 LaunchLab 平台配置的日志。迁移必须是成功交易中的 migrate_to_cpswap，核对 LaunchLab 程序、平台配置和 CPMM 程序，读取实际 mint、新池和 blockTime。AGE 以链上时间为准。
+- 官方毕业列表每 60 秒读取第一页和一页历史分页作为发现/补漏；只有 launchpad=launchlab 且 status=graduated、报告时间在 24 小时内的币进入待核验队列。旧 CLMM 直接建池不计入毕业币。
+- WebSocket 迁移签名直接核验；漏失候选按池地址分页回查签名，每次 100 条、单候选每分钟最多推进一页，每页最多查 3 笔靠近报告毕业时间的交易。高交易量代币可能需要更长核验时间，未核验币不消耗 X 预算。接口限流和格式变化会延迟发现，待核验数量展示在页面。
+- DexScreener 继续按迁移池直查；缺失时每轮最多补查 2 个 Stonk 官方 USD 行情，逐币间隔至少 60 秒，必须与链上核验的新池和 CA 一致，且源时间不超过 60 秒。
+- Dashboard 新增来源筛选、计价资产、转账税率和 Stonk 连接状态。两来源共用 X 总预算和退出规则。
+- 首版不将 Stonk 送入 Shadow，也不统计其聪明钱包买入数，页面显示待适配而不是零。原因是现有模型仅支持 SOL 买卖，尚未处理多种计价资产、其历史 USD 价格以及 Token-2022 的双边转账税/上限。X/AI 与行情可正常研究，不能把尚未适配的收益当作测试结果。
+验证依据：Stonk 官方开发者页面 https://www.stonkfun.xyz/developers ，Raydium 官方 IDL https://github.com/raydium-io/raydium-idl/blob/master/raydium_launchpad/raydium_launchpad.json 。平台配置地址参照 Stonk 数据接口文档 https://docs.bitquery.io/docs/blockchain/Solana/stonkfun-api/ ，接入后仍以链上指令验证。
