@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "dev": "vinext dev",
@@ -13,7 +13,8 @@
     "format": "oxfmt",
     "collector": "node --env-file-if-exists=.env backend/server.mjs",
     "test": "node --test --test-isolation=none tests/*.test.mjs",
-    "start:local": "node scripts/start.mjs"
+    "start:local": "node scripts/start.mjs",
+    "start:dashboard": "vinext start --hostname 127.0.0.1 --port 3000"
   },
   "dependencies": {
     "react": "19.2.6",
