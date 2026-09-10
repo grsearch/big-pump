@@ -1,7 +1,7 @@
 import {Analysis} from './analysis.mjs';
 import {classifyPost} from '../lib/social.ts';
 import { newToken,transition,heat,queryFor,associate,evaluateWallet } from '../lib/engine.ts';
-import { PUMP,decodeMigration,helius,jsonFetch,dexBatch,recentX,xWindowReady,holders,parseEnhanced } from './providers.mjs';
+import { PUMP,decodeMigration,helius,jsonFetch,dexBatch,dexPools,matchingPair,recentX,xWindowReady,holders,parseEnhanced } from './providers.mjs';
 export class Worker {
  constructor(store,env=process.env){this.s=store;this.env=env;this.analysis=new Analysis(store,env);this.rpc=env.HELIUS_API_KEY?helius(env.HELIUS_API_KEY):null;this.status={helius:'未配置',x:'未配置',dex:'等待启动',lastTick:null};this.running=false;this.socket=null;this.xBackoff=0;this.lastMarket=0;this.lastHolders=0;this.lastResearch=0;this.holderIndex=0;this.heartbeat=0;this.reassessWallets();}
  reassessWallets(){for(const w of this.s.all('wallet'))this.assess(w.address);}
@@ -20,9 +20,29 @@ export class Worker {
   if(this.rpc&&now-this.lastResearch>60000){this.lastResearch=now;if(this.env.ENABLE_WALLET_RESEARCH==='true')await this.researchTick();await this.walletQueueTick();}
   this.analysis.shadowTick();void this.analysis.tick().catch(()=>{});this.status.lastTick=now;
  }catch(e){this.s.event('error',e.message);}finally{this.busy=false;}}
- async market(){const active=this.s.get('config','shadow-active');const run=active&&this.s.get('shadow-run',active.id);const held=new Set((run?.arms??[]).flatMap(a=>a.positions.filter(p=>['open','pending'].includes(p.status)).map(p=>p.ca)));const list=this.s.all('token').filter(t=>held.has(t.ca)||(t.status!=='archived'&&(t.status!=='sleeping'||!t.marketAt||Date.now()-t.marketAt>=120000)));try{for(let i=0;i<list.length;i+=30){const batch=list.slice(i,i+30);const pairs=await dexBatch(batch);for(const t of batch){const p=pairs.filter(p=>p.baseToken?.address===t.ca&&p.pairAddress===t.pool)[0];if(!p)continue;const now=Date.now(),prev=this.s.get('token',t.ca);const account=p.info?.socials?.find(s=>s.type==='twitter')?.url?.match(/^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/)?.[1]??null;const fdv=Number.isFinite(p.fdv)?p.fdv:null;const meaningful=fdv!==null&&prev.fdv>0&&fdv/prev.fdv>=1.05;const authors=heat(this.s.posts(t.ca),t.ca,now).authors;this.s.put('token',t.ca,{...prev,symbol:p.baseToken.symbol,name:p.baseToken.name,priceUsd:Number(p.priceUsd)>0?Number(p.priceUsd):null,fdv,lp:p.liquidity?.usd??null,marketAt:now,xAccount:prev.xAccount??account,lastSignalAt:meaningful?now:prev.lastSignalAt,history:[...prev.history,...(fdv!==null?[{at:now,fdv,authors}]:[])].slice(-2880)});}}this.status.dex='已连接';}catch{this.status.dex='行情请求失败';}}
+ async market(){
+  const active=this.s.get('config','shadow-active'),run=active&&this.s.get('shadow-run',active.id);
+  const held=new Set((run?.arms??[]).flatMap(a=>a.positions.filter(p=>['open','pending'].includes(p.status)).map(p=>p.ca)));
+  const list=this.s.all('token').filter(t=>held.has(t.ca)||(t.status!=='archived'&&(t.status!=='sleeping'||!t.marketCheckedAt||Date.now()-t.marketCheckedAt>=120000)));
+  let updated=0,missing=0;
+  for(let i=0;i<list.length;i+=30){const batch=list.slice(i,i+30);let pairs=[],batchError=false;try{pairs=await dexBatch(batch);if(!Array.isArray(pairs))throw Error('invalid');}catch{pairs=[];batchError=true;}
+   const fallback=batch.filter(t=>{const p=matchingPair(pairs,t);return (!p||!Number.isFinite(p.fdv)||!Number.isFinite(p.liquidity?.usd));});
+   let direct=[];if(fallback.length){for(const t of fallback)this.s.put('token',t.ca,{...this.s.get('token',t.ca),poolLookupAt:Date.now()});try{direct=await dexPools(fallback);}catch{batchError=true;}}
+   for(const t of batch){const p=matchingPair(direct,t)??matchingPair(pairs,t),now=Date.now(),prev=this.s.get('token',t.ca);
+    const valid=p&&Number.isFinite(p.fdv)&&p.fdv>=0&&Number.isFinite(p.liquidity?.usd)&&p.liquidity.usd>=0;
+    const error=valid?null:batchError?'行情接口请求失败':p?'行情源缺少 FDV 或 LP':'行情源未返回迁移池';
+    if(error&&error!==prev.marketError)this.s.event('data',error+'；暂停该币 X 搜索',t.ca);
+    if(!valid){missing++;this.s.put('token',t.ca,{...prev,marketCheckedAt:now,marketError:error});continue;}
+    const account=p.info?.socials?.find(s=>s.type==='twitter')?.url?.match(/^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/)?.[1]??null;
+    const fdv=p.fdv,meaningful=prev.fdv>0&&fdv/prev.fdv>=1.05,authors=heat(this.s.posts(t.ca),t.ca,now).authors;
+    const value={...prev,symbol:p.baseToken.symbol??prev.symbol,name:p.baseToken.name??prev.name,priceUsd:Number(p.priceUsd)>0?Number(p.priceUsd):null,fdv,lp:p.liquidity.usd,marketAt:now,marketCheckedAt:now,marketError:null,marketSource:matchingPair(direct,t)?'DexScreener 迁移池直查':'DexScreener CA 批查',xAccount:prev.xAccount??account,lastSignalAt:meaningful?now:prev.lastSignalAt,history:[...prev.history,{at:now,fdv,authors}].slice(-2880)};
+    const next=transition(value,this.s.rules(),now,this.s.cost(),authors);if(next.status!==prev.status)this.s.event('state',next.reason,t.ca);this.s.put('token',t.ca,next);updated++;
+   }
+  }
+  if(list.length)this.status.dex=missing?'行情不完整 · 更新 '+updated+' / 缺失 '+missing:'已连接 · 行情已更新';
+ }
  resumeX(){this.s.put('config','x-block',null);this.xBackoff=0;this.status.x='等待重新验证';this.s.event('x','已手动恢复 X 请求；下一次采集将验证认证和参数');}
- async xPoll(){const s=this.s,r=s.rules(),now=Date.now();if(!this.env.X_BEARER_TOKEN){this.status.x='未配置';return;}if(this.env.ENABLE_X!=='true'){this.status.x='已配置 · 付费采集未开启';return;}const block=s.get('config','x-block');if(block){this.status.x=block.message;return;}if(!this.running||now<this.xBackoff)return;const list=s.all('token').filter(t=>['observing','priority'].includes(t.status)&&now-t.graduatedAt<Math.min(24,r.maxAgeHours)*3600000).sort((a,b)=>(a.xLastPoll??0)-(b.xLastPoll??0)).slice(0,r.maxActive);const t=list.find(t=>xWindowReady(t,now)&&now-(t.xLastPoll??0)>=(t.status==='priority'?30000:120000));if(!t){this.status.x=list.some(t=>!xWindowReady(t,now))?'等待 X 搜索窗口（入监控后至少 45 秒）':'等待下一次采集';return;}
+ async xPoll(){const s=this.s,r=s.rules(),now=Date.now();if(!this.env.X_BEARER_TOKEN){this.status.x='未配置';return;}if(this.env.ENABLE_X!=='true'){this.status.x='已配置 · 付费采集未开启';return;}const block=s.get('config','x-block');if(block){this.status.x=block.message;return;}if(!this.running||now<this.xBackoff)return;const list=s.all('token').filter(t=>['observing','priority'].includes(t.status)&&now-t.graduatedAt<Math.min(24,r.maxAgeHours)*3600000).sort((a,b)=>(a.xLastPoll??0)-(b.xLastPoll??0)).slice(0,r.maxActive);const t=list.find(t=>!t.marketError&&Number.isFinite(t.fdv)&&t.fdv>=r.lowFdv&&t.marketAt&&now>=t.marketAt&&now-t.marketAt<120000&&xWindowReady(t,now)&&now-(t.xLastPoll??0)>=(t.status==='priority'?30000:120000));if(!t){this.status.x=list.some(t=>!xWindowReady(t,now))?'等待 X 搜索窗口（入监控后至少 45 秒）':'等待下一次采集';return;}
   // Reserve the maximum possible response cost before calling the paid API.
   const remaining=Math.min(r.dailyBudget-s.cost(),r.tokenBudget-t.cost);const max=Math.min(100,Math.floor((remaining+1e-9)/r.postPrice));if(max<10){s.put('token',t.ca,{...t,status:'sleeping',reason:'剩余预算不足一次最小请求',stateAt:now});return;}
   s.put('token',t.ca,{...t,xLastPoll:now});const reserveId=`request:${now}:${t.ca}`;s.charge(reserveId,max*r.postPrice,now);s.put('token',t.ca,{...s.get('token',t.ca),cost:t.cost+max*r.postPrice});
