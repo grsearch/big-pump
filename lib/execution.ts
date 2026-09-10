@@ -1,0 +1,3 @@
+export interface TransferFee {bps:number;maxFee:number;decimals:number}
+export function afterTax(amount:number,f:TransferFee){if(!(amount>=0)||!Number.isInteger(f?.bps)||f.bps<0||f.bps>10000||!Number.isFinite(f.maxFee)||f.maxFee<0||!Number.isInteger(f.decimals)||f.decimals<0||f.decimals>18)return NaN;const units=10**f.decimals;return Math.max(0,amount-Math.min(Math.ceil(amount*units*f.bps/10000)/units,f.maxFee));}
+export function executionReady(t:any,now:number){return t.source!=='stonk'||!!(t.execution&&t.execution.at<=now&&now-t.execution.at<300000&&t.execution.priceAt<=now&&now-t.execution.priceAt<120000&&t.execution.quotePriceUsd>0&&Number.isFinite(afterTax(1,t.execution.baseFee))&&Number.isFinite(afterTax(1,t.execution.quoteFee)));}
