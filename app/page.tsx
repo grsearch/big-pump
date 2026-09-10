@@ -1,5 +1,6 @@
 'use client';
 import {observationRows} from '../lib/observation-list';
+import {collectorRequest} from '../lib/collector-client';
 import { useEffect,useState,useCallback } from 'react';
 import { Activity,Radar,Wallet,SlidersHorizontal,Copy,Search,ChevronRight,X,Pause,Play,ExternalLink,RefreshCw,Plus,Check,Clock,ArrowUpRight } from 'lucide-react';
 import { AreaChart,Area,XAxis,YAxis,Tooltip,ResponsiveContainer,CartesianGrid } from 'recharts';
@@ -39,13 +40,11 @@ const settings:{key:keyof Rules;label:string;unit:string;group:string}[]=[
 {key:'minWins',label:'验证最低合格样本',unit:'个币',group:'聪明钱包'}];
 export default function Page(){
  const [data,setData]=useState<any>(null),[demo,setDemo]=useState(false),[online,setOnline]=useState(false),[view,setView]=useState('监控台'),[filter,setFilter]=useState('all'),[sourceFilter,setSourceFilter]=useState('all'),[search,setSearch]=useState(''),[selected,setSelected]=useState<string|null>(null),[posts,setPosts]=useState<any[]>([]),[draft,setDraft]=useState<Rules>({...defaults}),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[add,setAdd]=useState(false),[signature,setSignature]=useState(''),[walletInput,setWalletInput]=useState(''),[sort,setSort]=useState('heat'),[page,setPage]=useState(1),[pageSize,setPageSize]=useState(20),[showRawPosts,setShowRawPosts]=useState(false),[now,setNow]=useState(Date.now());
- const local=typeof window!=='undefined'&&['localhost','127.0.0.1'].includes(window.location.hostname);
- const api=useCallback(async(path:string,body?:unknown)=>{if(!local)throw Error('真实采集器在本地运行，请使用本地 dashboard');const res=await fetch('http://127.0.0.1:5010/api'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(15000)});const j:any=await res.json();if(!res.ok)throw Error(j.error??'请求失败');return j;},[local]);
+ const api=collectorRequest;
  const refresh=useCallback(async()=>{try{const j=await api('/dashboard');setOnline(true);if(!demo)setData(j);}catch{setOnline(false);}},[api,demo]);
  useEffect(()=>{refresh();const i=setInterval(refresh,5000),t=setInterval(()=>setNow(Date.now()),1000);return()=>{clearInterval(i);clearInterval(t);};},[refresh]);
  useEffect(()=>{if(data?.rules)setDraft(data.rules);},[data?.rules&&JSON.stringify(data.rules)]);
  useEffect(()=>{if(!selected)return;if(demo)setPosts(data?.posts?.filter((p:any)=>p.ca===selected)??[]);else api('/posts/'+encodeURIComponent(selected)).then(setPosts).catch(()=>setPosts([]));},[selected,demo,api]);
- useEffect(()=>{if(!local){setData(demoData());setDemo(true);}},[local]);
  const toggleDemo=()=>{setSelected(null);if(!demo){setData(demoData());setDemo(true);}else{setDemo(false);setData(null);}};
  const act=async(path:string,body:any)=>{setBusy(true);try{if(demo){if(path==='/rules'){setData({...data,rules:validateRules(body)});}else if(path==='/token'){const t=data.tokens.find((x:any)=>x.ca===body.ca);if(body.action==='wake'&&now-t.graduatedAt>=data.rules.maxAgeHours*3600000)throw Error('已超过最大 AGE');setData({...data,tokens:data.tokens.map((x:any)=>x.ca!==body.ca?x:{...x,...(body.action==='alias'?{aliasVerified:body.verified}:{status:body.action==='sleep'?'sleeping':'observing',reason:body.action==='sleep'?'手动休眠':'手动唤醒'})})});}else throw Error('此操作需要真实采集器');setNotice('演示状态已更新；刷新页面后重置');}else{await api(path,body);await refresh();setNotice('已完成');}return true;}catch(e){setNotice(e instanceof Error?e.message:'操作失败');return false;}finally{setBusy(false);}};
  useEffect(()=>{const doc=document as any;if(!doc.modelContext?.registerTool)return;const life=new AbortController();Promise.resolve(doc.modelContext.registerTool({name:'show_monitor_view',description:'打开监控台、聪明钱包或规则与预算视图，不修改监控数据',inputSchema:{type:'object',properties:{view:{type:'string',enum:['监控台','聪明钱包','AI 评价','Shadow 测试','规则与预算']}},required:['view'],additionalProperties:false},annotations:{readOnlyHint:true},execute:async(input:any)=>{if(!['监控台','聪明钱包','AI 评价','Shadow 测试','规则与预算'].includes(input?.view))throw Error('无效视图');setView(input.view);return {view:input.view};}},{signal:life.signal})).catch(()=>{});return()=>life.abort();},[]);

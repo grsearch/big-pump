@@ -14,7 +14,8 @@
     "collector": "node --env-file-if-exists=.env backend/server.mjs",
     "test": "node --test --test-isolation=none tests/*.test.mjs",
     "start:local": "node scripts/start.mjs",
-    "start:dashboard": "vinext start --hostname 127.0.0.1 --port 3000"
+    "start:dashboard": "vinext start --hostname 127.0.0.1 --port 3000",
+    "start:dashboard:proxy": "vinext start --hostname 127.0.0.1 --port 3100"
   },
   "dependencies": {
     "react": "19.2.6",
