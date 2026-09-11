@@ -27,9 +27,9 @@ export class LiveTrading {
     if(previous?.strategy!==LIVE_C)store.put('config','live-trading',{...previous,strategy:LIVE_C,acceptEntries:false,startedAt:null,seen:{},lastError:null});
     this.jup = dependencies.jupiter ?? new Jupiter(store, env);
     this.wallet = dependencies.wallet ?? null; this.error = ''; this.busy = false;
-    this.slippageBps = Number(env.LIVE_SLIPPAGE_BPS ?? 100);
+    this.slippageBps = Number(env.LIVE_SLIPPAGE_BPS ?? 1500);
     this.maxFeeLamports = Number(env.LIVE_MAX_FEE_LAMPORTS ?? 5000000);
-    if (!Number.isInteger(this.slippageBps) || this.slippageBps < 1 || this.slippageBps > 500 || !Number.isSafeInteger(this.maxFeeLamports) || this.maxFeeLamports <= 0) this.error = '实盘滑点或费用配置无效';
+    if (!Number.isInteger(this.slippageBps) || this.slippageBps < 1 || this.slippageBps > 1500 || !Number.isSafeInteger(this.maxFeeLamports) || this.maxFeeLamports <= 0) this.error = '实盘滑点或费用配置无效';
     if (!this.error && env.ENABLE_LIVE_TRADING === 'true' && !this.wallet) {
       try {if (!rpc || !env.JUPITER_API_KEY) throw Error('请配置 Helius 和 Jupiter'); this.wallet = new LiveWallet(env, rpc);}
       catch (e) {this.error = e.message;}

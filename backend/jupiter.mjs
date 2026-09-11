@@ -22,7 +22,7 @@ export class Jupiter {
     if (now < (saved.blockedUntil ?? 0) || calls.length >= this.limit - (side === 'buy' ? 12 : 0)) throw retryError('Jupiter 额度等待：卖出优先',Math.max(saved.blockedUntil??0,(calls[0]??now)+60000));
     this.s.put('config', 'jupiter-rate', {...saved, calls: [...calls, now]});
   }
-  async order(inputMint, outputMint, amount, side, taker, slippageBps = 100) {
+  async order(inputMint, outputMint, amount, side, taker, slippageBps = 1500) {
     if (!this.env.JUPITER_API_KEY) throw Error('未配置 Jupiter API Key');
     if (!integer(amount) || BigInt(amount) <= 0n) throw Error('报价数量无效');
     this.reserve(side);

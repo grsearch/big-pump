@@ -17,6 +17,14 @@ function setup() {
   const engine=new LiveTrading(s,env,null,{wallet,jupiter,clock:()=>at});
   return {s,engine,wallet,jupiter,env,calls,clock:n=>{at=n;},receipt:r=>{receipt=r;},submitted:()=>submitted};
 }
+test('live defaults to 15 percent, propagates it to quotes, respects overrides and rejects larger limits',async()=>{
+ const f=setup();assert.equal(f.engine.slippageBps,1500);f.engine.control('start');f.s.put('token','coin',token());
+ const original=f.jupiter.order,limits=[];f.jupiter.order=async(...args)=>{limits.push(args[5]);return original(...args);};await f.engine.tick(true);assert.deepEqual(limits,[1500,1500]);
+ const smaller=new LiveTrading(f.s,{...f.env,LIVE_SLIPPAGE_BPS:'100'},null,{wallet:f.wallet,jupiter:f.jupiter});assert.equal(smaller.slippageBps,100);
+ const invalid=new LiveTrading(f.s,{...f.env,LIVE_SLIPPAGE_BPS:'1501'},null,{wallet:f.wallet,jupiter:f.jupiter});assert(invalid.error);f.s.close();
+ const expected={inputMint:SOL,outputMint:'coin',amount:BUY_LAMPORTS,taker:'wallet',slippageBps:1500};
+ assert(validateOrder(quote({slippageBps:1500,otherAmountThreshold:'850'}),expected));assert.throws(()=>validateOrder(quote({slippageBps:1500,otherAmountThreshold:'849'}),expected));
+});
 
 test('graduation event starts a quote immediately without a timer',async()=>{
  const f=setup();f.engine.control('start');f.s.put('token','coin',token());
