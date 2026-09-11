@@ -13,7 +13,7 @@ export function stonkWaitReason(t:any,now:number) {
   return '等待毕业信号时或之后的首个有效行情';
 }
 export function stonkExit(p:any,t:any,r:any,now:number) {
-  if(now-p.openedAt>=900000)return '持仓满 15 分钟';
+  if(now-p.openedAt>=1800000)return '持仓满 30 分钟';
   if(!ready(t,now))return null;
   const value=sellFill(t.priceUsd,t.lp,p.quantity,r,t).proceeds;
   p.highValue=Math.max(p.highValue??0,value);
@@ -48,6 +48,7 @@ export function stonkStep(arm:any,tokens:any[],run:any,now:number) {
     }
     if(p.status!=='open')continue;
     // Retire an unfilled exit queued by the old C rule; completed trades stay unchanged.
+    if(p.pendingExit?.reason==='持仓满 15 分钟'&&now-p.openedAt<1800000)p.pendingExit=null;
     if(p.pendingExit?.reason==='FDV 跌破 $10,000')p.pendingExit=null;
     if(p.pendingExit&&ready(t,now)&&t.marketAt>=p.pendingExit.at+r.latencyMs) {
       const fill=sellFill(t.priceUsd,t.lp,p.quantity,r,t);

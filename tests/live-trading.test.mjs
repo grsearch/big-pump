@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Store} from '../backend/store.mjs';
 import {Jupiter, SOL, BUY_LAMPORTS, validateOrder} from '../backend/jupiter.mjs';
-import {LiveTrading, exitReason, migrateLiveExit} from '../backend/live-trading.mjs';
+import {LiveTrading, exitReason, migrateLiveExit, LIVE_C} from '../backend/live-trading.mjs';
 import {LiveWallet} from '../backend/live-wallet.mjs';
 import {Keypair,TransactionMessage,VersionedTransaction} from '@solana/web3.js';
 const now=1800000000000;
 const quote=(extra={})=>({inputMint:SOL,outputMint:'coin',inAmount:BUY_LAMPORTS,outAmount:'1000',otherAmountThreshold:'990',swapMode:'ExactIn',slippageBps:100,
   signatureFeeLamports:5000,prioritizationFeeLamports:10000,rentFeeLamports:2000000,taker:'wallet',transaction:'test-only',requestId:'req',receivedAt:now,...extra});
-const token=(extra={})=>({ca:'coin',symbol:'C',source:'pump',status:'observing',graduatedAt:now-120000,marketAt:now,priceUsd:1,fdv:30000,lp:30000,xObservations:[{at:now,newAuthors:2,firstBatch:true}],...extra});
+const token=(extra={})=>({ca:'coin',symbol:'C',source:'stonk',migrationVerified:true,creationVerified:true,createdAt:now-60000,status:'observing',graduatedAt:now,marketAt:now,priceUsd:1,fdv:30000,lp:30000,xObservations:[{at:now,newAuthors:2,firstBatch:true}],...extra});
 function setup() {
   const s=new Store(':memory:');let at=now,submitted=0,receipt=null,calls=[];
   const wallet={address:'wallet',prepare:async()=>({signature:'test-signature',signedTransaction:'never-broadcast'}),execute:async()=>{submitted++;assert.equal(s.all('live-order').at(-1).status,'confirming');return {message:'等待确认'};},receipt:async()=>receipt};
@@ -46,17 +46,28 @@ test('wallet changes cannot silently take over an existing ledger',()=>{
   const another=new LiveTrading(f.s,f.env,null,{wallet:{...f.wallet,address:'different'},jupiter:f.jupiter});
   assert.throws(()=>another.control('start'),/账本不一致/);f.s.close();
 });
-test('A uses 0.1 SOL, probes reverse route, persists intent before send, never assumes a fill',async()=>{
+test('C uses 0.1 SOL, probes reverse route, persists intent before send, never assumes a fill',async()=>{
   const f=setup();f.engine.control('start');f.s.put('token','coin',token());
   await f.engine.tick(true);assert.equal(f.submitted(),1);assert.deepEqual(f.calls,['buy','buy']);
   assert.equal(f.s.all('live-order')[0].inputAmount,'100000000');assert.equal(f.s.all('live-position').length,0);
   assert(!JSON.stringify(f.engine.snapshot()).includes('never-broadcast'));
   await f.engine.tick(true);assert.equal(f.submitted(),1);f.s.close();
 });
-test('historical, future, stale, weak and missing-market signals do not buy',async()=>{
-  for(const patch of [{xObservations:[{at:now-1,newAuthors:2}]},{xObservations:[{at:now+1,newAuthors:2}]},{xObservations:[{at:now,newAuthors:1}]},{lp:5000},{marketError:'missing'}]){
-    const f=setup();f.engine.control('start');f.s.put('token','coin',token(patch));await f.engine.tick(true);assert.equal(f.submitted(),0);f.s.close();
-  }
+test('C rejects old/future graduations, unverified migration and failed program admission',async()=>{
+ for(const patch of [{graduatedAt:now-1},{graduatedAt:now+1},{source:'pump'},{migrationVerified:false},{creationVerified:false},{createdAt:now-1200001}]){
+ const f=setup();f.engine.control('start');f.s.put('token','coin',token(patch));await f.engine.tick(true);assert.equal(f.submitted(),0);f.s.close();
+ }
+});
+test('C does not require X, FDV or Shadow models when Jupiter validates the real route',async()=>{
+ const f=setup();f.engine.control('start');f.s.put('token','coin',token({xObservations:[],fdv:null,lp:null,shadowBlocked:'UI model unavailable'}));await f.engine.tick(true);assert.equal(f.submitted(),1);assert.equal(f.s.all('live-order')[0].strategy,LIVE_C);f.s.close();
+});
+test('C exits at 40 percent activation, 10 percent drawdown and 30 minutes',()=>{
+ const p={strategy:LIVE_C,costLamports:100,openedAt:now,highLamports:0};assert.equal(exitReason(p,139,now),null);assert(!p.trailingActive);assert.equal(exitReason(p,140,now),null);assert(p.trailingActive);assert.equal(exitReason(p,127,now),null);assert.match(exitReason(p,126,now),/10%/);
+ assert.equal(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1799999),null);assert.match(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1800000),/30 分钟/);
+});
+test('upgrading enabled A pauses new entries without deleting positions or pending orders',()=>{
+ const f=setup();f.s.put('config','live-trading',{acceptEntries:true,wallet:'wallet',startedAt:now});f.s.put('live-position','old',{ca:'old',status:'open'});f.s.put('live-order','old-order',{id:'old-order',status:'confirming'});
+ const engine=new LiveTrading(f.s,f.env,null,{wallet:f.wallet,jupiter:f.jupiter,clock:()=>now});assert.equal(engine.state().acceptEntries,false);assert.equal(f.s.all('live-position').length,1);assert.equal(f.s.all('live-order').length,1);f.s.close();
 });
 test('reverse route failure skips buy and never signs',async()=>{
   const f=setup();f.engine.control('start');f.s.put('token','coin',token());
