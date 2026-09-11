@@ -19,6 +19,10 @@ test('complete seven-day winner requires strict >20 SOL and recent realized big 
   assert.equal(assess(exact).status,'watch');
   assert.equal(assess(winner(),false).sevenDayProfitSol,null);
 });
+test('wallet can qualify with realized big wins held for 30 minutes rather than six hours',()=>{
+  const tx=winner().map(t=>t.side==='sell'?{...t,at:t.at-21600000+1800000}:t);
+  assert.equal(assess(tx).status,'verified');assert.equal(assess(tx).bigWins.length,10);
+});
 test('old gains cannot hide recent losses or supply recent winning evidence',()=>{
   const old=winner().map(t=>({...t,at:t.at-10*day,graduatedAt:t.graduatedAt-10*day}));
   const w=assess([...old,...pair('loss',10,1)]);
@@ -30,10 +34,10 @@ test('window profit replays earlier buy costs, includes losses and extra wallet 
   assert.equal(p.profit,7);assert.equal(p.evidence[0].multiple,6);
   assert.equal(walletPeriod(tx,defaults,now,1).profit,10);
 });
-test('fast exit with tiny long-held tail and unrealized winners are excluded',()=>{
+test('realized big wins no longer require 6h holding; unrealized winners remain excluded',()=>{
   const tx=pair('fast');tx[1].at=tx[0].at+60000;tx[1].quantity=99;
   tx.push({...tx[1],id:'tail',quantity:1,sol:.1,at:now-1000});
-  assert.equal(walletPeriod(tx,defaults,now,7).evidence.length,0);
+  assert.equal(walletPeriod(tx,defaults,now,7).evidence.length,1);
   assert.equal(walletPeriod([pair('open')[0]],defaults,now,7).evidence.length,0);
 });
 test('USD trades need contemporaneous SOL cost for every leg; future trades do not leak',()=>{

@@ -41,7 +41,6 @@ const settings:{key:keyof Rules;label:string;unit:string;group:string}[]=[
 {key:'minWalletAgeDays',label:'钱包最低链上年龄',unit:'天 · 严格大于',group:'聪明钱包'},
 {key:'minSevenDayProfitSol',label:'7 天净收益须超过',unit:'SOL · ≥20',group:'聪明钱包'},
 {key:'bigWinMultiple',label:'大赢单最低回收倍数',unit:'倍 · ≥5',group:'聪明钱包'},
-{key:'bigWinHoldHours',label:'大赢单实持时间',unit:'小时 · ≥6',group:'聪明钱包'},
 {key:'minWins',label:'验证最低合格样本',unit:'个币',group:'聪明钱包'}];
 export default function Page(){
  const [data,setData]=useState<any>(null),[demo,setDemo]=useState(false),[online,setOnline]=useState(false),[view,setView]=useState('监控台'),[filter,setFilter]=useState('all'),[sourceFilter,setSourceFilter]=useState('all'),[search,setSearch]=useState(''),[selected,setSelected]=useState<string|null>(null),[posts,setPosts]=useState<any[]>([]),[draft,setDraft]=useState<Rules>({...defaults}),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[add,setAdd]=useState(false),[signature,setSignature]=useState(''),[walletInput,setWalletInput]=useState(''),[sort,setSort]=useState('heat'),[page,setPage]=useState(1),[pageSize,setPageSize]=useState(20),[showRawPosts,setShowRawPosts]=useState(false),[now,setNow]=useState(Date.now());
