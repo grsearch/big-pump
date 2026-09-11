@@ -1,5 +1,6 @@
 'use client';
 import {useState} from 'react';
+import StonkReview from './stonk-review';
 import {diffusionDefaults,DIFFUSION_VERSION} from '../lib/diffusion-shadow';
 import {shadowDiagnostics} from '../lib/shadow-diagnostics';
 const armName=(id:string)=>({early:'A · 新增作者即买',breakout:'B · 扩散后突破',graduation:'C · Stonk 毕业即买',baseline:'旧 A · 基础社交',ai:'旧 B · AI 筛选'}[id]??id);
@@ -36,6 +37,7 @@ export default function ShadowPanel({data,demo,online,busy,act}:any) {
       </div>;
     })}</div>
     {modern&&run.status==='running'&&<div className="panel settings-panel spaced"><h2>为什么还没买入？</h2><p className="muted">按当前服务端快照逐币解释，每币显示首先未满足的条件；这是当前原因分布，不是历史漏单统计。采集器停止或 X 暂停时，应先恢复数据更新。</p><div className="bottom-grid">{run.arms.filter((a:any)=>a.id!=='graduation').map((a:any)=>{const d=shadowDiagnostics(data.tokens??[],a,run,now);return <div key={a.id}><h3>{armName(a.id)}</h3>{d.counts.map(([reason,count])=><p key={reason}>{reason}：<b>{count}</b> 个币</p>)}{!d.rows.length&&<p>暂无代币可检查。</p>}<details><summary>查看代币明细（前 20 个）</summary>{d.rows.slice(0,20).map(row=><p key={row.ca}><a href={'https://gmgn.ai/sol/token/'+encodeURIComponent(row.ca)} target="_blank" rel="noreferrer">{row.symbol??row.ca.slice(0,6)}</a> · {row.reason} · 本批新作者 {row.newAuthors??'未采集'}</p>)}</details></div>;})}</div></div>}
+    {run.arms.some((a:any)=>a.id==='graduation')&&<StonkReview arm={run.arms.find((a:any)=>a.id==='graduation')}/>}
     <div className="panel spaced"><div className="panel-head"><h2>信号与模拟持仓</h2><span>X / AI 研究费用另行核算</span></div><div className="table-scroll"><table><thead><tr>{['组别','Token','状态','已实现','退出 / 等待原因','证据与成交'].map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{run.arms.flatMap((a:any)=>a.positions.map((p:any)=><tr key={p.id}>
       <td>{armName(a.id)}</td><td><a href={'https://gmgn.ai/sol/token/'+encodeURIComponent(p.ca)} target="_blank" rel="noreferrer">{p.symbol}</a><small>{p.evidence?.type}</small></td><td>{p.status}{p.unpriced?' · 无法估值':''}{p.trailingActive?' · 移动止盈已激活':''}</td><td>${(p.realized??0).toFixed(2)}</td><td>{p.pendingExit?.reason??p.reason}</td>
       <td><details><summary>{p.fills.length} 次估算</summary><p className="muted">信号：{new Date(p.signalAt).toLocaleTimeString()} · FDV {p.evidence?.fdv??'—'} · 新作者 {p.evidence?.observation?.newAuthors??'—'}</p>
