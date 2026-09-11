@@ -10,7 +10,11 @@ export function historyCandidate(t,now=Date.now()){
 }
 // Research records never enter the observation/live-trading token table.
 export class StonkHistory {
- constructor(worker,fetchJson=jsonFetch){this.w=worker;this.s=worker.s;this.fetch=fetchJson;this.busy=false;this.nextAt=0;}
+ constructor(worker,fetchJson=jsonFetch){this.w=worker;this.s=worker.s;this.fetch=fetchJson;this.busy=false;this.nextAt=0;this.upgrade();}
+ upgrade(){const j=this.s.get('config',key);if(!j||j.version>=2)return;let retried=0;
+  for(const t of this.s.all('history-token').filter(t=>t.runId===j.id&&t.phase==='unverified')){this.s.put('history-token',t.ca,{...t,phase:'verify',cursor:null,pending:[],nextCursor:null,pages:0,checkedAt:0});retried++;}
+  this.s.put('config',key,{...j,version:2,...(retried?{stage:'coins',status:j.status==='running'?'running':'paused',error:null,finishedAt:null}:{} )});
+ }
  snapshot(){const job=this.s.get('config',key);return {job,tokens:this.s.all('history-token').filter(t=>t.runId===job?.id).sort((a,b)=>b.fdvUsd-a.fdvUsd),buyers:this.s.all('history-buyer').filter(t=>t.runId===job?.id).length};}
  control(action){
   if(this.busy)throw Error('正在保存扫描页，请稍后操作');
@@ -18,7 +22,7 @@ export class StonkHistory {
   if(action==='start'){
    if(j?.status==='running')return this.snapshot();
    if(!this.w.rpc)throw Error('请先配置 Helius');
-   j={id:Date.now(),status:'running',stage:'list',page:1,minFdvUsd:HISTORY_MIN_FDV,startedAt:Date.now(),seen:0};
+   j={id:Date.now(),version:2,status:'running',stage:'list',page:1,minFdvUsd:HISTORY_MIN_FDV,startedAt:Date.now(),seen:0};
   }else if(action==='pause'&&j)j={...j,status:'paused'};
   else if(action==='resume'&&j){
    if(!this.w.rpc)throw Error('请先配置 Helius');
@@ -56,10 +60,13 @@ export class StonkHistory {
  async coin(t){
   if(t.phase==='verify'){
    // Persist a page before examining its transactions, one transaction per tick.
-   if(!t.pending?.length){const r=await this.signatures(t,t.pool,t.reportedGraduatedAt-300000,t.reportedGraduatedAt+300000);t={...t,pending:r.data.map(x=>x.signature),nextCursor:r.paginationToken??null};}
+   if(!t.pending?.length){const r=await this.signatures(t,t.pool,t.reportedGraduatedAt-300000,t.reportedGraduatedAt+300000);t={...t,totalPages:(t.totalPages??0)+1,signatures:(t.signatures??0)+r.data.length,pending:r.data.map(x=>x.signature),nextCursor:r.paginationToken??null};this.s.put('history-token',t.ca,t);}
    if(t.pending.length){const signature=t.pending[0],tx=await this.w.rpc('getTransaction',[signature,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'finalized'}]);if(!tx)throw Error('交易暂不可用');
     const found=decodeStonkMigration(tx,Date.now(),Infinity);
-    if(found&&found.ca===t.ca&&found.pool===t.pool){this.s.put('history-reference',t.ca,{...found,symbol:t.symbol});this.s.put('history-token',t.ca,{...t,...found,phase:'pool',pages:0,cursor:null,pending:[],checkedAt:Date.now()});return;}
+    // Public `pool` may identify the LaunchLab curve rather than the migrated CPMM.
+    // Trust either address only when decoded from the same verified Stonk migration.
+    t={...t,checkedTransactions:(t.checkedTransactions??0)+1};
+    if(found&&found.ca===t.ca&&(found.pool===t.pool||found.curvePool===t.pool)){this.s.put('history-reference',t.ca,{...found,symbol:t.symbol});this.s.put('history-token',t.ca,{...t,discoveryPool:t.pool,...found,phase:'pool',pages:0,cursor:null,pending:[],checkedAt:Date.now()});return;}
     t={...t,pending:t.pending.slice(1)};
    }
    if(t.pending.length){this.s.put('history-token',t.ca,{...t,checkedAt:Date.now()});return;}
@@ -76,7 +83,7 @@ export class StonkHistory {
     this.w.saveTrade(tr);this.s.put('history-buyer',t.ca+':'+tr.wallet,{runId:t.runId,ca:t.ca,address:tr.wallet,at:tr.at,signature:tr.id});this.w.assess(tr.wallet);
    }}
   }
-  this.advance(t,r.paginationToken,curve?'done':'curve');
+  this.advance({...t,totalPages:(t.totalPages??0)+1,signatures:(t.signatures??0)+r.data.length,checkedTransactions:(t.checkedTransactions??0)+r.data.length},r.paginationToken,curve?'done':'curve');
  }
  advance(t,cursor,donePhase){const pages=t.pages+1;this.s.put('history-token',t.ca,{...t,checkedAt:Date.now(),pending:[],nextCursor:null,cursor:cursor??null,pages:cursor?pages:0,phase:cursor?(pages>=50?'capped':t.phase):donePhase,resumePhase:t.phase});}
 }
