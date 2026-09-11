@@ -17,6 +17,41 @@ function setup() {
   const engine=new LiveTrading(s,env,null,{wallet,jupiter,clock:()=>at});
   return {s,engine,wallet,jupiter,env,calls,clock:n=>{at=n;},receipt:r=>{receipt=r;},submitted:()=>submitted};
 }
+
+test('graduation event starts a quote immediately without a timer',async()=>{
+ const f=setup();f.engine.control('start');f.s.put('token','coin',token());
+ await f.engine.onGraduation(true);assert.equal(f.submitted(),1);f.s.close();
+});
+test('transient quote failure retries the same intent after restart, never duplicates a submission',async()=>{
+ const f=setup();f.engine.control('start');f.s.put('token','coin',token());const order=f.jupiter.order;let first=true;
+ f.jupiter.order=async(...args)=>{if(first){first=false;throw Object.assign(Error('route pending'),{retryable:true});}return order(...args);};
+ await f.engine.tick(true);assert.equal(f.s.all('live-order')[0].status,'retrying');
+ const restarted=new LiveTrading(f.s,f.env,null,{wallet:f.wallet,jupiter:f.jupiter,clock:()=>now+1000});
+ await restarted.tick(true);await restarted.tick(true);assert.equal(f.submitted(),1);assert.equal(f.s.all('live-order').length,1);assert.equal(f.s.all('live-order')[0].attempts,2);f.s.close();
+});
+test('retry backoff, maximum attempts, pause and graduation deadline are enforced',async()=>{
+ for(const mode of ['limit','pause','deadline']){
+ const f=setup();f.engine.control('start');f.s.put('token','coin',token());f.jupiter.order=async()=>{throw Object.assign(Error('offline'),{retryable:true});};
+ await f.engine.tick(true);await f.engine.tick(true);assert.equal(f.s.all('live-order')[0].attempts,1);
+ if(mode==='pause')f.engine.control('pause');
+ if(mode==='deadline')f.clock(now+120001);
+ if(mode==='limit')for(const delay of [1000,3000,7000,15000,23000]){f.clock(now+delay);await f.engine.tick(true);}
+ else await f.engine.tick(true);
+ assert.equal(f.s.all('live-order')[0].status,'skipped');assert.equal(f.submitted(),0);f.s.close();
+ }
+});
+test('collector stop during quote prevents submission',async()=>{
+ const f=setup();f.engine.control('start');f.s.put('token','coin',token());const order=f.jupiter.order;
+ f.jupiter.order=async(...args)=>{await f.engine.tick(false);return order(...args);};
+ await f.engine.onGraduation(true);assert.equal(f.submitted(),0);f.s.close();
+});
+test('routine exits alternate with new entries but triggered exits take priority',async()=>{
+ for(const urgent of [false,true]){
+ const f=setup();f.engine.control('start');f.s.put('token','coin',token());f.s.put('live-position','older',{ca:'older',status:'open',openedAt:now-10000,checkedAt:0,...(urgent?{exitReason:'exit'}:{})});
+ let checks=0;f.engine.checkExit=async()=>{checks++;};await f.engine.tick(true);
+ assert.equal(f.submitted(),urgent?0:1);if(!urgent)await f.engine.tick(true);assert.equal(checks,1);f.s.close();
+ }
+});
 test('free tier persists sliding reservations and reserves 12 slots for exits',()=>{
   const s=new Store(':memory:');let at=now;
   let j=new Jupiter(s,{JUPITER_API_KEY:'test'},null,()=>at);

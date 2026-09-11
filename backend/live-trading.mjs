@@ -38,6 +38,7 @@ export class LiveTrading {
     if (this.wallet && boundWallet && boundWallet !== this.wallet.address) this.error = '钱包与持久化实盘账本不一致，不能接管原钱包持仓';
   }
   state() {return this.s.get('config', 'live-trading') ?? {acceptEntries:false, startedAt:null, seen:{}};}
+  onGraduation(collectorRunning){this.wakePending=collectorRunning;return this.tick(collectorRunning);}
   snapshot() {
     const state = this.state();
     return {...state, acceptEntries:state.acceptEntries && this.env.ENABLE_LIVE_TRADING === 'true' && !!this.wallet && !this.error,
@@ -59,40 +60,52 @@ export class LiveTrading {
     return {ok:true};
   }
   async tick(collectorRunning) {
+    this.collectorRunning=collectorRunning;
     if (this.busy || !this.wallet || this.error || this.env.ENABLE_LIVE_TRADING !== 'true') return;
     this.busy = true;
+    this.wakePending=false;
     try {
       await this.reconcile();
       const now = this.clock();
       const positions = this.s.all('live-position').filter(p => p.status === 'open');
       const pending = this.s.all('live-order').filter(o => o.status === 'confirming');
       const due = positions.filter(p => !pending.some(o => o.ca === p.ca) && now - (p.checkedAt ?? 0) >= 5000).sort((a,b) => (a.checkedAt ?? 0) - (b.checkedAt ?? 0));
-      if (due.length) {await this.checkExit(due[0]); return;}
-      if (!collectorRunning || !this.state().acceptEntries || pending.length) return;
       const state = this.state();
-      for (const t of this.s.all('token')) {
-        if (this.s.get('live-position', t.ca)) continue;
+      for(const o of this.s.all('live-order').filter(o=>o.status==='retrying'))if(!collectorRunning||!state.acceptEntries||!liveCEntry(this.s.get('token',o.ca),state,now))this.s.put('live-order',o.id,{...o,status:'skipped',reason:'已暂停或毕业买入窗口超过 2 分钟'});
+      const candidates=collectorRunning&&state.acceptEntries&&!pending.length?this.s.all('token').filter(t=>{
+        if (this.s.get('live-position', t.ca)) return false;
+        if(!liveCEntry(t,state,now))return false;
+        const order=this.s.get('live-order','buy:'+t.ca+':'+t.graduatedAt);
+        return !order||(['retrying','preparing'].includes(order.status)&&now>=(order.nextAttemptAt??0));
+      }).sort((a,b)=>b.graduatedAt-a.graduatedAt):[];
+      const urgent=due.find(p=>p.exitReason||now-p.openedAt>=1800000);
+      if(urgent||due.length&&(!candidates.length||this.lastAction==='buy')){await this.checkExit(urgent??due[0]);this.lastAction='sell';return;}
+      for (const t of candidates) {
         const o = {at:t.graduatedAt};
-        if (!liveCEntry(t,state,now)||o.at<=(state.seen[t.ca]??0)) continue;
         state.seen[t.ca] = o.at; this.s.put('config', 'live-trading', state);
-        await this.buy(t, o); break;
+        await this.buy(t, o);this.lastAction='buy';break;
       }
     } catch (e) {this.s.put('config', 'live-trading', {...this.state(), lastError:e.message, checkedAt:this.clock()});}
-    finally {this.busy = false;}
+    finally {this.busy = false;if(this.wakePending){this.wakePending=false;queueMicrotask(()=>{void this.tick(this.collectorRunning);});}}
   }
   async buy(t, observation) {
     const id = 'buy:' + t.ca + ':' + observation.at;
+    const previous=this.s.get('live-order',id),attempts=(previous?.attempts??0)+1;
     const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, strategy:LIVE_C, side:'buy', at:this.clock(), signalAt:observation.at,
-      status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
+      attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
     this.s.put('live-order', id, intent);
     try {
       const q = await this.jup.order(SOL, t.ca, BUY_LAMPORTS, 'buy', this.wallet.address, this.slippageBps);
       // Probe the reverse route before signing, not a guarantee of future liquidity.
       await this.jup.order(t.ca, SOL, q.otherAmountThreshold, 'buy', undefined, this.slippageBps);
       const current = this.s.get('token', t.ca);
-      if (!this.state().acceptEntries || !liveCEntry(current,this.state(),this.clock())) throw Error('签名前入场条件失效');
+      if (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(current,this.state(),this.clock())) throw Error('签名前入场条件失效');
       await this.submit(intent, q);
-    } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming') this.s.put('live-order', id, {...intent, status:'skipped', reason:e.message});}
+    } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming'){
+      const nextAttemptAt=Math.max(this.clock()+Math.min(8000,1000*2**(attempts-1)),e.retryAt??0);
+      const retry=e.retryable===true&&attempts<6&&this.collectorRunning!==false&&this.state().acceptEntries&&nextAttemptAt<=observation.at+120000;
+      this.s.put('live-order', id, {...intent,status:retry?'retrying':'skipped',nextAttemptAt:retry?nextAttemptAt:null,reason:e.message});
+    }}
   }
   async checkExit(position) {
     migrateLiveExit(position);
@@ -114,7 +127,7 @@ export class LiveTrading {
   }
   async submit(intent, quote) {
     const signed = await this.wallet.prepare(quote, intent.side, this.maxFeeLamports);
-    if (intent.side === 'buy' && (!this.state().acceptEntries || !liveCEntry(this.s.get('token',intent.ca),this.state(),this.clock()))) throw Error('签名后入场已暂停或过期');
+    if (intent.side === 'buy' && (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(this.s.get('token',intent.ca),this.state(),this.clock()))) throw Error('签名后入场已暂停或过期');
     const order = {...intent, ...signed, requestId:quote.requestId, lastValidBlockHeight:quote.lastValidBlockHeight, status:'confirming', quoteAt:quote.receivedAt, quotedOut:quote.outAmount, minimumOut:quote.otherAmountThreshold};
     // Persist before any broadcast. A crash from here never causes automatic resubmission.
     this.s.put('live-order', order.id, order);

@@ -1,6 +1,7 @@
 export const SOL = 'So11111111111111111111111111111111111111112';
 export const BUY_LAMPORTS = '100000000';
 const integer = value => typeof value === 'string' && /^[0-9]+$/.test(value);
+const retryError=(message,retryAt=0)=>Object.assign(new Error(message),{retryable:true,retryAt});
 
 // Persist reservations before dispatch: a timeout still consumed an API request.
 export class Jupiter {
@@ -18,7 +19,7 @@ export class Jupiter {
   reserve(side) {
     const now = this.clock(), saved = this.s.get('config', 'jupiter-rate') ?? {};
     const calls = (saved.calls ?? []).filter(at => now - at < 60000);
-    if (now < (saved.blockedUntil ?? 0) || calls.length >= this.limit - (side === 'buy' ? 12 : 0)) throw Error('Jupiter 额度等待：卖出优先');
+    if (now < (saved.blockedUntil ?? 0) || calls.length >= this.limit - (side === 'buy' ? 12 : 0)) throw retryError('Jupiter 额度等待：卖出优先',Math.max(saved.blockedUntil??0,(calls[0]??now)+60000));
     this.s.put('config', 'jupiter-rate', {...saved, calls: [...calls, now]});
   }
   async order(inputMint, outputMint, amount, side, taker, slippageBps = 100) {
@@ -30,14 +31,15 @@ export class Jupiter {
     let response;
     try {response = await this.fetch('https://api.jup.ag/swap/v2/order?' + params, {
       headers: {'x-api-key': this.env.JUPITER_API_KEY}, signal: AbortSignal.timeout(10000)});
-    } catch {throw Error('Jupiter 报价网络失败');}
+    } catch {throw retryError('Jupiter 报价网络失败');}
     if (response.status === 429) {
       const seconds = Number(response.headers.get('retry-after'));
       const wait = Number.isFinite(seconds) && seconds > 0 ? Math.max(60, seconds) : 60;
       this.s.put('config', 'jupiter-rate', {...this.s.get('config', 'jupiter-rate'), blockedUntil: this.clock() + wait * 1000});
     }
-    if (!response.ok) throw Error('Jupiter 报价 HTTP ' + response.status);
+    if (!response.ok) {if(response.status===429||response.status>=500)throw retryError('Jupiter 报价 HTTP '+response.status,this.status().blockedUntil);throw Error('Jupiter 报价 HTTP ' + response.status);}
     const q = await response.json();
+    if(q?.error||q?.errorCode||q?.outAmount==='0')throw retryError('Jupiter 暂未返回可用路由');
     validateOrder(q, {inputMint, outputMint, amount, taker, slippageBps});
     return {...q, receivedAt: this.clock()};
   }

@@ -8,6 +8,7 @@ import { heat, validateRules } from '../lib/engine.ts';
 const bootAt=Date.now();console.log('Collector initializing: database and wallet verification');
 const store=new Store(resolve(process.env.DATA_DIR??'data','pump.db'));removePumpObservations(store);const worker=new Worker(store,{...process.env,MONITOR_SOURCE:'stonk'});const port=Number(process.env.PORT??5010);
 const live=new LiveTrading(store,process.env,worker.rpc);
+worker.onGraduation=()=>{void live.onGraduation(worker.running).catch(()=>{});};
 const liveTimer=setInterval(()=>{void live.tick(worker.running).catch(()=>{});},1000);
 const origins=new Set(['http://localhost:3000','http://127.0.0.1:3000',`http://localhost:${port}`,`http://127.0.0.1:${port}`]);
 export const server=createServer(async(req,res)=>{const origin=req.headers.origin;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');if(!['127.0.0.1','localhost'].includes((req.headers.host??'').split(':')[0])){res.writeHead(403);res.end('{}');return;}if(origin&&!origins.has(origin)){res.writeHead(403);res.end('{}');return;}if(origin)res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Vary','Origin');res.setHeader('Access-Control-Allow-Headers','Content-Type');res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
