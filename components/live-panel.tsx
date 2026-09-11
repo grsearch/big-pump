@@ -8,7 +8,7 @@ export default function LivePanel({data,demo,online,busy,act}:any) {
   const open=positions.filter((p:any)=>p.status==='open'), closed=positions.filter((p:any)=>p.status==='closed');
   const failedFees=orders.filter((o:any)=>o.status==='failed'&&o.side==='buy').reduce((sum:number,o:any)=>sum+(o.receipt?.feeLamports??0),0);
   const labels:Record<string,string>={preparing:'核验报价',confirming:'等待链上核对',confirmed:'已确认',failed:'链上失败',skipped:'已跳过'};
-  return <><div className="section-intro"><h2>A · 新增作者即买 · 实盘</h2><p>每次 0.1 SOL，Pump 与 Stonk 共用 Jupiter 路由。独立账本，不继承 Shadow 持仓或历史信号。</p></div>
+  return <><div className="section-intro"><h2>A · 新增作者即买 · 实盘</h2><p>每次 0.1 SOL，Stonk 使用 Jupiter 路由。独立账本，不继承 Shadow 持仓或历史信号。</p></div>
     <div className="notice">{live?.acceptEntries?'新开仓已启用':'新开仓关闭'} · {live?.enabled?'服务器允许实盘':'服务器实盘开关关闭'} · {live?.configured?'钱包已配置':'钱包未就绪'}<br/>+20% 激活移动止盈，回撤 5% 退出；固定止盈 +50%、止损 -15%、最长 30 分钟。阈值依据扣费后的卖出报价，成交金额可能不同。</div>
     <div className="panel"><div className="panel-head"><h2>运行状态</h2><span>Jupiter {live?.jupiter?.used??0} / {live?.jupiter?.limit??60} 次 / 分钟</span></div><div className="detail-box">
       <p>钱包：{live?.wallet?<a href={'https://gmgn.ai/sol/address/'+live.wallet} target="_blank" rel="noreferrer">{live.wallet} ↗</a>:'尚未配置'}</p>
