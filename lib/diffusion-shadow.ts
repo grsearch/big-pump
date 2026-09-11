@@ -19,7 +19,7 @@ const fresh=(t:any,now:number)=>executionReady(t,now)&&!t.shadowBlocked&&!t.mark
 export function diffusionBase(t:any,r:any,now:number) {
   return fresh(t,now)&&['observing','priority'].includes(t.status)&&t.lp>=r.minLp&&t.fdv>=r.minFdv&&t.fdv<=r.maxFdv&&t.graduatedAt<=now&&now-t.graduatedAt<=r.maxAgeHours*3600000;
 }
-function historyBefore(t:any,at:number) {
+export function historyBefore(t:any,at:number) {
   const rows=(t.history??[]).filter((p:any)=>p.at<at&&p.at>=at-360000&&p.fdv>0).sort((a:any,b:any)=>a.at-b.at);
   const start=rows.filter((p:any)=>p.at<=at-300000).at(-1);
   if(!start)return null;
@@ -27,7 +27,7 @@ function historyBefore(t:any,at:number) {
   if(at-span.at(-1).at>90000||span.some((p:any,i:number)=>i>0&&p.at-span[i-1].at>90000))return null;
   return {base:start.fdv,high:Math.max(...span.map((p:any)=>p.fdv))};
 }
-function expanding(o:any,r:any) {return o?.complete&&o.authors>=r.minAuthors&&o.clean>=r.minPosts&&o.priorAuthors>=r.minPriorAuthors&&o.authors>=o.priorAuthors*r.authorGrowth&&o.newcomers>=r.minNewcomers;}
+export function expanding(o:any,r:any) {return o?.complete&&o.authors>=r.minAuthors&&o.clean>=r.minPosts&&o.priorAuthors>=r.minPriorAuthors&&o.authors>=o.priorAuthors*r.authorGrowth&&o.newcomers>=r.minNewcomers;}
 export function diffusionExit(p:any,t:any,r:any,now:number) {
   if(now-p.openedAt>=r.maxHoldHours*3600000)return {fraction:1,reason:'最大持仓时间'};
   if(now>=t.graduatedAt+86400000||['sleeping','archived'].includes(t.status))return {fraction:1,reason:'监控退出'};
