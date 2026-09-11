@@ -3,6 +3,14 @@ import {executionReady} from './execution.ts';
 
 export const newStonkArm=(now:number,cash:number)=>({id:'graduation',startedAt:now,cash,equity:cash,peak:cash,maxDrawdown:0,positions:[],seen:{},candidates:{}});
 const ready=(t:any,now:number)=>t&&executionReady(t,now)&&!t.marketError&&!t.shadowBlocked&&t.priceUsd>0&&t.lp>0&&t.marketAt<=now&&now-t.marketAt<=60000;
+export function stonkWaitReason(t:any,now:number) {
+  if(!t)return '代币记录不可用';
+  if(t.shadowBlocked)return '执行模型未通过：'+t.shadowBlocked;
+  if(!executionReady(t,now))return '税费模型或计价资产汇率缺失/过期';
+  if(t.marketError)return '行情异常：'+t.marketError;
+  if(!ready(t,now))return '价格、流动性缺失或行情过期';
+  return '等待交易延迟后的新行情';
+}
 export function stonkExit(p:any,t:any,r:any,now:number) {
   if(now-p.openedAt>=900000)return '持仓满 15 分钟';
   if(!ready(t,now))return null;
@@ -18,8 +26,9 @@ export function stonkStep(arm:any,tokens:any[],run:any,now:number) {
   for(const p of arm.positions) {
     const t=tokens.find(t=>t.ca===p.ca);
     if(p.status==='pending') {
-      if(!run.acceptEntries||now-p.signalAt>120000){p.status='cancelled';p.reason='入场暂停或等待行情超时';continue;}
-      if(!ready(t,now)||t.marketAt<p.signalAt+r.latencyMs)continue;
+      if(!run.acceptEntries){p.status='cancelled';p.reason='已暂停新开仓';continue;}
+      if(now-p.signalAt>120000){p.status='cancelled';p.reason='等待超过 2 分钟：'+stonkWaitReason(t,now);continue;}
+      if(!ready(t,now)||t.marketAt<p.signalAt+r.latencyMs){p.reason=stonkWaitReason(t,now);continue;}
       if(!(t.fdv>=10000)){p.status='cancelled';p.reason='买入前 FDV 已低于 $10,000';continue;}
       const fill=buyFill(t.priceUsd,t.lp,r.positionUsd,r,t);
       if(!fill||!Number.isFinite(fill.quantity)||fill.quantity<=0||arm.cash<r.positionUsd)continue;
