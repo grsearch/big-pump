@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {decodeStonkMigration,stonkCandidate,STONK_CONFIGS,LAUNCHLAB,CPMM} from '../backend/stonk.mjs';
+import {decodeStonkMigration,stonkCandidate,fastGraduation,STONK_CONFIGS,LAUNCHLAB,CPMM} from '../backend/stonk.mjs';
 import {base58} from '../backend/providers.mjs';
 import {Store} from '../backend/store.mjs';
 import {Worker} from '../backend/worker.mjs';
@@ -9,7 +9,26 @@ import {entryGate,shadowDefaults} from '../lib/shadow.ts';
 const now=Date.now(),ca=base58(Buffer.alloc(32,1)),pool=base58(Buffer.alloc(32,2)),quote=base58(Buffer.alloc(32,3));
 const data=base58(createHash('sha256').update('global:migrate_to_cpswap').digest().subarray(0,8));
 function fixture(){const keys=Array.from({length:18},(_,i)=>base58(Buffer.alloc(32,i+4)));keys[1]=ca;keys[2]=quote;keys[3]=STONK_CONFIGS[0];keys[4]=CPMM;keys[5]=pool;keys.push(LAUNCHLAB);return {blockTime:Math.floor(now/1000)-60,meta:{err:null},transaction:{message:{accountKeys:keys,instructions:[{programIdIndex:18,accounts:Array.from({length:18},(_,i)=>i),data}]}}};}
-function row(){return {mint:ca,pool,name:'Example',symbol:'EX',status:'graduated',launchpad:'launchlab',graduatedAt:new Date(now-60000).toISOString(),quote:{mint:quote,symbol:'SPYx'},mode:'reward',transferFee:{bps:300}};}
+function row(){return {mint:ca,pool,name:'Example',symbol:'EX',status:'graduated',launchpad:'launchlab',createdAt:new Date(now-120000).toISOString(),graduatedAt:new Date(now-60000).toISOString(),quote:{mint:quote,symbol:'SPYx'},mode:'reward',transferFee:{bps:300}};}
+
+test('20 minute graduation gate is inclusive and fails closed for missing or reversed times',()=>{
+ assert(fastGraduation(now-1200000,now));assert(!fastGraduation(now-1200001,now));
+ for(const created of [undefined,null,NaN,0,now+1])assert(!fastGraduation(created,now));
+ assert.equal(stonkCandidate({...row(),createdAt:undefined},now),null);
+ assert.equal(stonkCandidate({...row(),createdAt:new Date(now-3600000).toISOString()},now),null);
+});
+test('WebSocket migration resolves creation time and blocks slow or unknown creation before enrollment',async()=>{
+ const original=globalThis.fetch,s=new Store(':memory:'),w=new Worker(s,{ENABLE_STONK:'true'});w.rpc=async()=>fixture();
+ let value={...row(),createdAt:undefined};globalThis.fetch=async()=>new Response(JSON.stringify({data:{token:value}}));
+ try{
+  assert.equal(await w.stonk.confirm('missing'),false);assert.equal(s.get('token',ca),null);
+  value={...row(),createdAt:new Date(now-3600000).toISOString()};assert.equal(await w.stonk.confirm('slow'),true);assert.equal(s.get('token',ca),null);assert(s.get('stonk-exclusion',ca));
+  s.db.prepare('DELETE FROM records WHERE kind=?').run('stonk-exclusion');value=row();assert.equal(await w.stonk.confirm('fast'),true);assert.equal(s.get('token',ca).createdAt,Date.parse(value.createdAt));
+ }finally{globalThis.fetch=original;s.close();}
+});
+test('low-level Stonk enrollment cannot bypass creation filter',()=>{
+ const s=new Store(':memory:'),w=new Worker(s,{MONITOR_SOURCE:'stonk'});try{const found=decodeStonkMigration(fixture());w.enroll(found);assert.equal(s.get('token',ca),null);w.stonk.enroll({...found,createdAt:now-3600000});assert.equal(s.get('token',ca),null);}finally{s.close();}
+});
 test('Stonk migration verifies program, platform, target program and chain block time',()=>{const tx=fixture(),m=decodeStonkMigration(tx,now);assert.equal(m.ca,ca);assert.equal(m.pool,pool);assert.equal(m.quoteMint,quote);assert.equal(m.graduatedAt,tx.blockTime*1000);for(const index of [3,4,18]){const bad=fixture();bad.transaction.message.accountKeys[index]=ca;assert.equal(decodeStonkMigration(bad,now),null);}const bad=fixture();bad.meta.err={InstructionError:[0,'error']};assert.equal(decodeStonkMigration(bad,now),null);assert.equal(decodeStonkMigration({...fixture(),blockTime:now/1000+10},now),null);assert.equal(decodeStonkMigration({...fixture(),blockTime:now/1000-86400},now),null);});
 test('Stonk parses v0 lookup addresses and nested instructions',()=>{const tx=fixture(),msg=tx.transaction.message,ix=msg.instructions[0];tx.meta.loadedAddresses={writable:msg.accountKeys.splice(5),readonly:[]};msg.instructions=[];tx.meta.innerInstructions=[{index:0,instructions:[ix]}];assert.equal(decodeStonkMigration(tx,now).pool,pool);});
 test('official graduation is only a candidate; legacy pools and future dates rejected',()=>{assert.equal(stonkCandidate(row(),now).transferFeeBps,300);assert.equal(stonkCandidate({...row(),launchpad:'clmm'},now),null);assert.equal(stonkCandidate({...row(),status:'new'},now),null);assert.equal(stonkCandidate({...row(),graduatedAt:new Date(now+1000).toISOString()},now),null);assert.equal(stonkCandidate({...row(),transferFee:{bps:'300'}},now).transferFeeBps,null);});

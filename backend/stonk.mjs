@@ -6,6 +6,8 @@ export const CPMM='CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
 export const STONK_CONFIGS=['6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt','4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7'];
 const discriminator=createHash('sha256').update('global:migrate_to_cpswap').digest().subarray(0,8);
 const address=x=>typeof x==='string'&&/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(x);
+export const MAX_GRADUATION_DELAY_MS=20*60000;
+export function fastGraduation(createdAt,graduatedAt){return Number.isFinite(createdAt)&&Number.isFinite(graduatedAt)&&createdAt>0&&graduatedAt>=createdAt&&graduatedAt-createdAt<=MAX_GRADUATION_DELAY_MS;}
 function decode58(s){if(typeof s!=='string'||s.length>200)return null;let n=0n;for(const c of s){const i='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'.indexOf(c);if(i<0)return null;n=n*58n+BigInt(i);}let h=n.toString(16);if(h.length%2)h='0'+h;return Buffer.concat([Buffer.alloc(s.match(/^1*/)[0].length),n?Buffer.from(h,'hex'):Buffer.alloc(0)]);}
 // Decode only a successful, confirmed transaction; include v0 lookup-table accounts.
 export function decodeStonkMigration(tx,now=Date.now(),maxAgeMs=86400000){
@@ -21,8 +23,9 @@ export function decodeStonkMigration(tx,now=Date.now(),maxAgeMs=86400000){
 }
 export function stonkCandidate(t,now=Date.now()){
  const at=Date.parse(t?.graduatedAt);if(t?.launchpad!=='launchlab'||t.status!=='graduated'||!address(t.mint)||!address(t.pool)||!Number.isFinite(at)||at>now||now-at>=86400000)return null;
+ const createdAt=Date.parse(t.createdAt);if(!fastGraduation(createdAt,at))return null;
  const bps=t.transferFee?.bps;
- return {ca:t.mint,pool:t.pool,reportedGraduatedAt:at,symbol:t.symbol,name:t.name,quoteMint:t.quote?.mint,quoteSymbol:t.quote?.symbol??'未知',transferFeeBps:Number.isInteger(bps)&&bps>=0&&bps<=10000?bps:t.mode==='standard'?0:null,mode:t.mode??'unknown',links:t.links??{},market:t.market??{}};
+ return {ca:t.mint,pool:t.pool,createdAt,reportedGraduatedAt:at,symbol:t.symbol,name:t.name,quoteMint:t.quote?.mint,quoteSymbol:t.quote?.symbol??'未知',transferFeeBps:Number.isInteger(bps)&&bps>=0&&bps<=10000?bps:t.mode==='standard'?0:null,mode:t.mode??'unknown',links:t.links??{},market:t.market??{}};
 }
 export class StonkDiscovery{
  constructor(worker){this.w=worker;this.s=worker.s;this.nextPoll=0;this.nextVerify=0;this.status='等待启动';}
@@ -36,8 +39,24 @@ export class StonkDiscovery{
   return {chainId:'solana',pairAddress:t.pool,baseToken:{address:t.ca,symbol:row.symbol,name:row.name},fdv:m.fdvUsd,liquidity:{usd:m.liquidityUsd},priceUsd:m.priceUsd,_source:'Stonk 官方 USD 行情',_at:at};
  }
  enqueue(signature){if(!this.enabled()||!signature||this.s.get('stonk-signature',signature))return;this.s.put('stonk-signature',signature,{signature,at:Date.now(),tries:0});}
- async confirm(signature){const tx=await this.w.rpc('getTransaction',[signature,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);if(!tx)return false;const found=decodeStonkMigration(tx);if(found)this.enroll(found,signature);return true;}
- enroll(found,signature){if(this.s.get('token',found.ca))return;const c=this.s.get('stonk-candidate',found.ca);this.w.enroll(found,null);const t=this.s.get('token',found.ca);if(!t)return;this.s.put('token',found.ca,{...t,...found,migrationSignature:signature,...(c?this.metadata(c):{}),smartCoverage:'按实际余额变化统计；缺少历史汇率的样本不验证',shadowBlocked:'等待链上税费与计价资产行情'});this.s.event('migration','Stonk 链上迁移已验证',found.ca);}
+ async confirm(signature){
+  const tx=await this.w.rpc('getTransaction',[signature,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);if(!tx)return false;
+  const found=decodeStonkMigration(tx);if(!found||this.s.get('token',found.ca)||this.s.get('stonk-exclusion',found.ca))return true;
+  let c=this.s.get('stonk-candidate',found.ca),createdAt=c?.pool===found.pool?c.createdAt:null;
+  // WebSocket can arrive before the public list. Resolve creation time before enrollment.
+  if(!Number.isFinite(createdAt)){
+   const j=await jsonFetch('https://www.stonkfun.xyz/api/public/v1/tokens/'+encodeURIComponent(found.ca)),row=j.data?.token??j.data;
+   if(row?.mint!==found.ca||row.pool!==found.pool||row.launchpad!=='launchlab'||row.status!=='graduated')return false;
+   createdAt=Date.parse(row.createdAt);if(!Number.isFinite(createdAt))return false;
+   c=stonkCandidate(row);if(c)this.s.put('stonk-candidate',found.ca,{...this.s.get('stonk-candidate',found.ca),...c});
+  }
+  if(!fastGraduation(createdAt,found.graduatedAt)){
+   this.s.put('stonk-exclusion',found.ca,{ca:found.ca,createdAt,graduatedAt:found.graduatedAt,reason:'创建至毕业超过 20 分钟，或时间无效'});
+   this.s.event('filter','未入监控：创建至毕业超过 20 分钟，或时间无效',found.ca);return true;
+  }
+  this.enroll({...found,createdAt},signature);return true;
+ }
+ enroll(found,signature){if(!fastGraduation(found.createdAt,found.graduatedAt)||this.s.get('token',found.ca))return;const c=this.s.get('stonk-candidate',found.ca);this.w.enroll(found,null);const t=this.s.get('token',found.ca);if(!t)return;this.s.put('token',found.ca,{...t,...found,migrationSignature:signature,...(c?this.metadata(c):{}),smartCoverage:'按实际余额变化统计；缺少历史汇率的样本不验证',shadowBlocked:'等待链上税费与计价资产行情'});this.s.event('migration','Stonk 链上迁移已验证 · 创建后 20 分钟内毕业',found.ca);}
  metadata(c){const x=c.links?.twitter?.match(/^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/)?.[1];return {symbol:c.symbol??c.ca.slice(0,5),name:c.name??'Stonk',quoteMint:c.quoteMint,quoteSymbol:c.quoteSymbol,transferFeeBps:c.transferFeeBps,launchMode:c.mode,xAccount:x??null};}
  async pollPage(page){const j=await jsonFetch('https://www.stonkfun.xyz/api/public/v1/tokens?status=graduated&sort=newest&pageSize=100&page='+page);if(!Array.isArray(j.data?.tokens))throw Error('Stonk 响应格式无效');for(const row of j.data.tokens){const c=stonkCandidate(row);if(!c)continue;const old=this.s.get('stonk-candidate',c.ca);this.s.put('stonk-candidate',c.ca,{...old,...c,seenAt:Date.now()});const t=this.s.get('token',c.ca);if(t?.source==='stonk'){this.s.put('token',c.ca,{...t,...this.metadata(c),xAccount:t.xAccount??this.metadata(c).xAccount});}}
  return Math.max(1,Number(j.data?.pagination?.totalPages)||1);}
@@ -47,7 +66,7 @@ export class StonkDiscovery{
   if(now<this.nextVerify)return;this.nextVerify=now+5000;
   const sig=this.s.all('stonk-signature').find(x=>!x.done&&x.tries<5&&now-x.at<86400000&&now-(x.checkedAt??0)>30000);
   if(sig){try{const done=await this.confirm(sig.signature);this.s.put('stonk-signature',sig.signature,{...sig,done,tries:sig.tries+1,checkedAt:now});}catch{this.s.put('stonk-signature',sig.signature,{...sig,tries:sig.tries+1,checkedAt:now});}return;}
-  const c=this.s.all('stonk-candidate').filter(x=>!this.s.get('token',x.ca)&&now-x.reportedGraduatedAt<86400000&&now-(x.checkedAt??0)>60000&&(!x.exhaustedAt||now-x.exhaustedAt>300000)).sort((a,b)=>(a.checkedAt??0)-(b.checkedAt??0))[0];if(!c)return;
+  const c=this.s.all('stonk-candidate').filter(x=>!this.s.get('token',x.ca)&&!this.s.get('stonk-exclusion',x.ca)&&now-x.reportedGraduatedAt<86400000&&now-(x.checkedAt??0)>60000&&(!x.exhaustedAt||now-x.exhaustedAt>300000)).sort((a,b)=>(a.checkedAt??0)-(b.checkedAt??0))[0];if(!c)return;
   // Bounded historical verification, persisted pagination: no inferred graduation timestamp.
   try{const opts={limit:100,commitment:'confirmed',...(c.before?{before:c.before}:{})};const sigs=await this.w.rpc('getSignaturesForAddress',[c.pool,opts]);const plausible=sigs.filter(x=>!x.err&&x.blockTime&&Math.abs(x.blockTime*1000-c.reportedGraduatedAt)<300000);for(const x of plausible.slice(-3)){await this.confirm(x.signature);if(this.s.get('token',c.ca))break;}
    const end=sigs.length<100||sigs.at(-1)?.blockTime*1000<c.reportedGraduatedAt-300000;
