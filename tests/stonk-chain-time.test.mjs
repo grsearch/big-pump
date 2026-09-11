@@ -5,6 +5,26 @@ import {Store} from '../backend/store.mjs';
 import {Worker} from '../backend/worker.mjs';
 import {decodeStonkCreation,decodeStonkMigration,fastGraduation,stonkCandidate} from '../backend/stonk.mjs';
 const fixture=name=>JSON.parse(readFileSync(new URL('./fixtures/'+name+'.json',import.meta.url),'utf8'));
+test('migration queue bypasses creation backlog, reserves background progress and persists retries beyond five attempts',async()=>{
+ const s=new Store(':memory:'),w=new Worker(s,{ENABLE_STONK:'true'}),seen=[];w.rpc=async()=>null;
+ try{
+  for(let i=0;i<100;i++)w.stonk.enqueue('old'+i,'creation');
+  w.stonk.enqueue('new','migration');w.stonk.confirm=async sig=>{seen.push(sig);return sig!=='new';};
+  await w.stonk.drainSignatures();assert.equal(seen[0],'new');assert.equal(seen.length,2);assert.equal(s.get('stonk-signature','old0').done,true);
+  const retry=s.get('stonk-signature','new');assert.equal(retry.done,false);assert(retry.nextAttemptAt>Date.now());
+  s.put('stonk-signature','new',{...retry,tries:8,nextAttemptAt:0});await w.stonk.drainSignatures();assert.equal(s.get('stonk-signature','new').tries,9);
+ }finally{s.close();}
+});
+test('event wakes verification immediately and single flight prevents duplicate work',async()=>{
+ const s=new Store(':memory:'),w=new Worker(s,{ENABLE_STONK:'true'});w.rpc=async()=>null;w.running=true;let calls=0,release;
+ w.stonk.confirm=()=>{calls++;return new Promise(resolve=>{release=resolve;});};
+ w.stonk.enqueue('live','migration');assert.equal(calls,1);await w.stonk.drainSignatures();assert.equal(calls,1);release(true);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(s.get('stonk-signature','live').done,true);w.running=false;s.close();
+});
+test('queued signatures do not starve independent candidate verification',async()=>{
+ const s=new Store(':memory:'),w=new Worker(s,{ENABLE_STONK:'true'});w.rpc=async()=>[];w.stonk.nextPoll=Infinity;
+ try{w.stonk.enqueue('backlog','creation');s.put('stonk-candidate','candidate',{ca:'candidate',pool:'pool',reportedGraduatedAt:Date.now()-1000});await w.stonk.run();assert(s.get('stonk-candidate','candidate').checkedAt);assert(!s.get('stonk-signature','backlog').done);}finally{s.close();}
+});
 for(const [name,seconds] of [['bob',109],['divi',72]]){
  test(name+' real chain creation and separate standard migration pass 20m despite bad API time',async()=>{
   const init=fixture(name+'-creation'),migration=fixture(name+'-migration'),clock=migration.blockTime*1000+1000;

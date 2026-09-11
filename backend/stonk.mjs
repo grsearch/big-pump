@@ -59,7 +59,24 @@ export class StonkDiscovery{
   const m=row.market;if(!m||!Number.isFinite(m.fdvUsd)||!Number.isFinite(m.liquidityUsd)||!(m.priceUsd>0))return null;
   return {chainId:'solana',pairAddress:t.pool,baseToken:{address:t.ca,symbol:row.symbol,name:row.name},fdv:m.fdvUsd,liquidity:{usd:m.liquidityUsd},priceUsd:m.priceUsd,_source:'Stonk 官方 USD 行情',_at:at};
  }
- enqueue(signature){if(!this.enabled()||!signature||this.s.get('stonk-signature',signature))return;this.s.put('stonk-signature',signature,{signature,at:Date.now(),tries:0});}
+ enqueue(signature,kind='unknown'){if(!this.enabled()||!signature)return;const old=this.s.get('stonk-signature',signature);if(old){if(!old.done&&kind==='migration')this.s.put('stonk-signature',signature,{...old,kind});return;}this.s.put('stonk-signature',signature,{signature,kind,at:Date.now(),tries:0});if(this.w.running)void this.drainSignatures().catch(()=>{});}
+ async drainSignatures(){
+  if(this.signatureBusy||!this.enabled()||!this.w.rpc)return;
+  const now=Date.now();if(now<(this.signatureBlockedUntil??0))return;
+  this.signatureBusy=true;
+  try{
+   const eligible=this.s.all('stonk-signature').filter(x=>!x.done&&now-x.at<86400000&&now>=(x.nextAttemptAt??((x.checkedAt??0)+((x.tries??0)?30000:0))));
+   const recent=eligible.filter(x=>x.kind==='migration').sort((a,b)=>b.at-a.at);
+   const background=eligible.filter(x=>x.kind!=='migration').sort((a,b)=>(a.checkedAt??0)-(b.checkedAt??0)||a.at-b.at);
+   const batch=[...recent.slice(0,3),...background.slice(0,1)];
+   if(!recent.length)batch.push(...background.slice(1,4));
+   await Promise.all(batch.map(async sig=>{
+    let done=false,error=null;try{done=await this.confirm(sig.signature);}catch(e){error='链上核验请求失败';if(e.retryAfter)this.signatureBlockedUntil=Date.now()+Math.max(1000,e.retryAfter*1000);}
+    const tries=(sig.tries??0)+1,at=Date.now();
+    this.s.put('stonk-signature',sig.signature,{...this.s.get('stonk-signature',sig.signature),done,tries,checkedAt:at,nextAttemptAt:done?null:at+Math.min(60000,1000*2**Math.min(tries-1,6)),lastError:done?null:error??'等待交易或创建证明'});
+   }));
+  }finally{this.signatureBusy=false;}
+ }
  async confirm(signature){
   const tx=await this.w.rpc('getTransaction',[signature,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);if(!tx)return false;
   const creation=decodeStonkCreation(tx);if(creation)this.s.put('stonk-creation',creation.ca,{...creation,signature});
@@ -88,8 +105,6 @@ export class StonkDiscovery{
  async run(){if(!this.enabled()){this.status='未开启';return;}if(!this.w.rpc){this.status='需要 Helius 核验迁移';return;}const now=Date.now();
   if(now>=this.nextPoll){this.nextPoll=now+60000;try{const pages=await this.pollPage(1);const cursor=this.s.get('config','stonk-pages')?.page??2;if(pages>1)await this.pollPage(Math.min(cursor,pages));this.s.put('config','stonk-pages',{page:cursor>=pages?2:cursor+1});this.status='已连接 · 毕业候选等待链上核验';}catch(e){this.nextPoll=now+Math.max(60000,(e.retryAfter??60)*1000);this.status='Stonk 列表请求失败，稍后重试';}}
   if(now<this.nextVerify)return;this.nextVerify=now+5000;
-  const sig=this.s.all('stonk-signature').find(x=>!x.done&&x.tries<5&&now-x.at<86400000&&now-(x.checkedAt??0)>30000);
-  if(sig){try{const done=await this.confirm(sig.signature);this.s.put('stonk-signature',sig.signature,{...sig,done,tries:sig.tries+1,checkedAt:now});}catch{this.s.put('stonk-signature',sig.signature,{...sig,tries:sig.tries+1,checkedAt:now});}return;}
   const c=this.s.all('stonk-candidate').filter(x=>!this.s.get('token',x.ca)&&!this.s.get('stonk-exclusion',x.ca)&&now-x.reportedGraduatedAt<86400000&&now-(x.checkedAt??0)>(x.pending?.length?5000:60000)&&(!x.exhaustedAt||now-x.exhaustedAt>300000)).sort((a,b)=>(a.checkedAt??0)-(b.checkedAt??0))[0];if(!c)return;
   // Bounded historical verification, persisted pagination: no inferred graduation timestamp.
   try{

@@ -3,9 +3,14 @@ import assert from 'node:assert/strict';
 import {Store} from '../backend/store.mjs';
 import {Jupiter, SOL, BUY_LAMPORTS, validateOrder} from '../backend/jupiter.mjs';
 import {LiveTrading, exitReason, migrateLiveExit, LIVE_C} from '../backend/live-trading.mjs';
-import {LiveWallet} from '../backend/live-wallet.mjs';
+import {LiveWallet,simulationFailure} from '../backend/live-wallet.mjs';
 import {Keypair,TransactionMessage,VersionedTransaction} from '@solana/web3.js';
 const now=1800000000000;
+test('simulation preserves instruction errors and bounded logs; only expired blockhash is retryable',()=>{
+ const e=simulationFailure({err:{InstructionError:[3,{Custom:6001}]},logs:Array(30).fill('Program log: Error: slippage'),unitsConsumed:123});
+ assert.match(e.message,/6001/);assert.equal(e.retryable,false);assert.equal(e.diagnostic.logs.length,12);assert.equal(e.diagnostic.error.InstructionError[0],3);
+ assert.equal(simulationFailure({err:'BlockhashNotFound'}).retryable,true);assert.equal(simulationFailure(null).retryable,false);
+});
 const quote=(extra={})=>({inputMint:SOL,outputMint:'coin',inAmount:BUY_LAMPORTS,outAmount:'1000',otherAmountThreshold:'990',swapMode:'ExactIn',slippageBps:100,
   signatureFeeLamports:5000,prioritizationFeeLamports:10000,rentFeeLamports:2000000,taker:'wallet',transaction:'test-only',requestId:'req',receivedAt:now,...extra});
 const token=(extra={})=>({ca:'coin',symbol:'C',source:'stonk',migrationVerified:true,creationVerified:true,createdAt:now-60000,status:'observing',graduatedAt:now,marketAt:now,priceUsd:1,fdv:30000,lp:30000,xObservations:[{at:now,newAuthors:2,firstBatch:true}],...extra});

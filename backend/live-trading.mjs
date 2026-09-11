@@ -104,7 +104,7 @@ export class LiveTrading {
     } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming'){
       const nextAttemptAt=Math.max(this.clock()+Math.min(8000,1000*2**(attempts-1)),e.retryAt??0);
       const retry=e.retryable===true&&attempts<6&&this.collectorRunning!==false&&this.state().acceptEntries&&nextAttemptAt<=observation.at+120000;
-      this.s.put('live-order', id, {...intent,status:retry?'retrying':'skipped',nextAttemptAt:retry?nextAttemptAt:null,reason:e.message});
+      this.s.put('live-order', id, {...intent,status:retry?'retrying':'skipped',nextAttemptAt:retry?nextAttemptAt:null,reason:e.message,diagnostic:e.diagnostic??null});
     }}
   }
   async checkExit(position) {
@@ -122,7 +122,7 @@ export class LiveTrading {
       const intent = {id:'sell:' + position.ca + ':' + this.clock(), ca:position.ca, symbol:position.symbol, side:'sell', at:this.clock(), status:'preparing', inputAmount:position.quantity, reason};
       this.s.put('live-order', intent.id, intent);
       try {await this.submit(intent, q);}
-      catch (e) {if (this.s.get('live-order', intent.id)?.status !== 'confirming') this.s.put('live-order', intent.id, {...intent, status:'skipped', reason:e.message}); throw e;}
+      catch (e) {if (this.s.get('live-order', intent.id)?.status !== 'confirming') this.s.put('live-order', intent.id, {...intent, status:'skipped', reason:e.message,diagnostic:e.diagnostic??null}); throw e;}
     } catch (e) {this.s.put('live-position', position.ca, {...position, quoteError:e.message});}
   }
   async submit(intent, quote) {
