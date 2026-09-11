@@ -1,5 +1,5 @@
 'use client';
-import {useState} from 'react';
+import {useState,useEffect} from 'react';
 import StonkReview from './stonk-review';
 import {diffusionDefaults,DIFFUSION_VERSION} from '../lib/diffusion-shadow';
 import {shadowDiagnostics} from '../lib/shadow-diagnostics';
@@ -9,6 +9,13 @@ export default function ShadowPanel({data,demo,online,busy,act}:any) {
   const runs=[...(data?.shadowRuns??[])].sort((a:any,b:any)=>b.startedAt-a.startedAt);
   const run=runs.find((r:any)=>r.status==='running')??runs[0];
   const modern=run?.version===DIFFUSION_VERSION;
+  const [tradePage,setTradePage]=useState(1),[tradePageSize,setTradePageSize]=useState(20);
+  const latestAt=(p:any)=>Math.max(p.signalAt??0,p.openedAt??0,p.closedAt??0,...(p.fills??[]).map((f:any)=>f.at??0));
+  const tradeRows=(run?.arms??[]).flatMap((a:any)=>a.positions.map((p:any)=>({a,p,at:latestAt(p)}))).sort((a:any,b:any)=>b.at-a.at||String(a.p.id).localeCompare(String(b.p.id)));
+  const tradePages=Math.max(1,Math.ceil(tradeRows.length/tradePageSize)),currentTradePage=Math.min(tradePage,tradePages);
+  const visibleTrades=tradeRows.slice((currentTradePage-1)*tradePageSize,currentTradePage*tradePageSize);
+  useEffect(()=>setTradePage(1),[run?.id]);
+  useEffect(()=>{if(tradePage>tradePages)setTradePage(tradePages);},[tradePage,tradePages]);
   const now=data?.now??Date.now(),lastCheck=run?Math.min(...run.arms.map((a:any)=>a.updatedAt??0)):0;
   const state=!run?'尚未启动':run.status==='finished'?'实验已结束':!online?'连接已断开，显示上次结果':!data.running?'采集器已停止':run.acceptEntries===false?'已暂停新开仓，继续管理持仓':!lastCheck?'已创建，等待首次策略检查':now-lastCheck>30000?'策略检查已超过 30 秒未更新':'策略正在运行';
   return <>
@@ -38,12 +45,12 @@ export default function ShadowPanel({data,demo,online,busy,act}:any) {
     })}</div>
     {modern&&run.status==='running'&&<div className="panel settings-panel spaced"><h2>为什么还没买入？</h2><p className="muted">按当前服务端快照逐币解释，每币显示首先未满足的条件；这是当前原因分布，不是历史漏单统计。采集器停止或 X 暂停时，应先恢复数据更新。</p><div className="bottom-grid">{run.arms.filter((a:any)=>a.id!=='graduation').map((a:any)=>{const d=shadowDiagnostics(data.tokens??[],a,run,now);return <div key={a.id}><h3>{armName(a.id)}</h3>{d.counts.map(([reason,count])=><p key={reason}>{reason}：<b>{count}</b> 个币</p>)}{!d.rows.length&&<p>暂无代币可检查。</p>}<details><summary>查看代币明细（前 20 个）</summary>{d.rows.slice(0,20).map(row=><p key={row.ca}><a href={'https://gmgn.ai/sol/token/'+encodeURIComponent(row.ca)} target="_blank" rel="noreferrer">{row.symbol??row.ca.slice(0,6)}</a> · {row.reason} · 本批新作者 {row.newAuthors??'未采集'}</p>)}</details></div>;})}</div></div>}
     {run.arms.some((a:any)=>a.id==='graduation')&&<StonkReview arm={run.arms.find((a:any)=>a.id==='graduation')}/>}
-    <div className="panel spaced"><div className="panel-head"><h2>信号与模拟持仓</h2><span>X / AI 研究费用另行核算</span></div><div className="table-scroll"><table><thead><tr>{['组别','Token','状态','已实现','退出 / 等待原因','证据与成交'].map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{run.arms.flatMap((a:any)=>a.positions.map((p:any)=><tr key={p.id}>
-      <td>{armName(a.id)}</td><td><a href={'https://gmgn.ai/sol/token/'+encodeURIComponent(p.ca)} target="_blank" rel="noreferrer">{p.symbol}</a><small>{p.evidence?.type}</small></td><td>{p.status}{p.unpriced?' · 无法估值':''}{p.trailingActive?' · 移动止盈已激活':''}</td><td>${(p.realized??0).toFixed(2)}</td><td>{p.pendingExit?.reason??p.reason}</td>
+    <div className="panel spaced"><div className="panel-head"><h2>信号与模拟持仓</h2><span>X / AI 研究费用另行核算</span></div><div className="table-scroll"><table><thead><tr>{['组别','Token','最近交易 / 信号时间','状态','已实现','退出 / 等待原因','证据与成交'].map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{visibleTrades.map(({a,p,at}:any)=><tr key={p.id}>
+      <td>{armName(a.id)}</td><td><a href={'https://gmgn.ai/sol/token/'+encodeURIComponent(p.ca)} target="_blank" rel="noreferrer">{p.symbol}</a><small>{p.evidence?.type}</small></td><td>{at?new Date(at).toLocaleString('zh-CN'):'—'}</td><td>{p.status}{p.unpriced?' · 无法估值':''}{p.trailingActive?' · 移动止盈已激活':''}</td><td>${(p.realized??0).toFixed(2)}</td><td>{p.pendingExit?.reason??p.reason}</td>
       <td><details><summary>{p.fills.length} 次估算</summary><p className="muted">信号：{new Date(p.signalAt).toLocaleTimeString()} · FDV {p.evidence?.fdv??'—'} · 新作者 {p.evidence?.observation?.newAuthors??'—'}</p>
         {p.evidence?.observation&&<p className="muted">收到：{new Date(p.evidence.observation.at).toLocaleTimeString()} · 帖子到达延迟：{(p.evidence.observation.postTimes??[]).map((at:number)=>((p.evidence.observation.at-at)/1000).toFixed(0)+'s').join(' / ')||'—'}</p>}
         {p.fills.map((f:any,i:number)=><p className="muted" key={i}>{new Date(f.at).toLocaleTimeString()} {f.side} · {f.reason??'入场'} · 冲击 {(f.impact*100).toFixed(2)}% {f.signalDelayMs!=null?' · 信号到成交 '+(f.signalDelayMs/1000).toFixed(0)+'s':''}</p>)}</details></td>
-    </tr>))}</tbody></table></div>{!run.arms.some((a:any)=>a.positions.length)&&<div className="empty-note">等待实时信号。首次开始不会用实验开始前的帖子批次补造买入。</div>}</div>
+    </tr>)}</tbody></table></div><div className="pagination"><span>共 {tradeRows.length} 条 · 第 {currentTradePage} / {tradePages} 页 · 最新交易优先</span><select aria-label="交易记录每页数量" value={tradePageSize} onChange={e=>{setTradePageSize(Number(e.target.value));setTradePage(1);}}>{[10,20,50].map(n=><option key={n} value={n}>每页 {n} 条</option>)}</select><button className="button subtle" disabled={currentTradePage<=1} onClick={()=>setTradePage(1)}>首页</button><button className="button" disabled={currentTradePage<=1} onClick={()=>setTradePage(currentTradePage-1)}>上一页</button><button className="button" disabled={currentTradePage>=tradePages} onClick={()=>setTradePage(currentTradePage+1)}>下一页</button><button className="button subtle" disabled={currentTradePage>=tradePages} onClick={()=>setTradePage(tradePages)}>末页</button></div>{!run.arms.some((a:any)=>a.positions.length)&&<div className="empty-note">等待实时信号。首次开始不会用实验开始前的帖子批次补造买入。</div>}</div>
     <p className="muted">{modern?`A/B 按扣除预计卖出费用后的可回收金额：+${run.rules.trailingActivation*100}% 激活移动止盈、回撤 ${run.rules.trailingDrop*100}% 全卖；固定止盈 +${run.rules.takeProfit*100}%、止损 −${run.rules.stopLoss*100}%，最长 ${run.rules.maxHoldHours*60} 分钟。`:`旧实验按冻结参数执行：价格止损 ${run.rules.stopLoss*100}%、${run.rules.partialTake} 倍分批止盈、回撤 ${run.rules.trailingDrop*100}%、最长 ${run.rules.maxHoldHours} 小时。`} 触发后等待新行情，实际模拟卖价可能更差。</p></>}
   </>;
 }
