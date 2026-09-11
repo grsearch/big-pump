@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Store} from '../backend/store.mjs';
 import {Jupiter, SOL, BUY_LAMPORTS, validateOrder} from '../backend/jupiter.mjs';
-import {LiveTrading, exitReason} from '../backend/live-trading.mjs';
+import {LiveTrading, exitReason, migrateLiveExit} from '../backend/live-trading.mjs';
 import {LiveWallet} from '../backend/live-wallet.mjs';
 import {Keypair,TransactionMessage,VersionedTransaction} from '@solana/web3.js';
 const now=1800000000000;
@@ -86,14 +86,22 @@ test('no five-position cap: all due positions are checked fairly',async()=>{
   for(let i=0;i<8;i++)await f.engine.tick(false);
   assert(f.s.all('live-position').every(p=>p.checkedAt===now));f.s.close();
 });
-test('net-SOL exit thresholds: arm20%, drawdown5%, TP50%, SL15%, time30m',()=>{
+test('net-SOL exits: arm100%, drawdown20%, no fixed TP/SL, time30m',()=>{
   const p={costLamports:100000000,openedAt:now};
   assert.equal(exitReason(p,119000000,now),null);assert(!p.trailingActive);
-  assert.equal(exitReason(p,120000000,now),null);assert(p.trailingActive);
-  assert.match(exitReason(p,114000000,now),/移动/);
-  assert.match(exitReason({...p},150000000,now),/固定止盈/);
-  assert.match(exitReason({...p},85000000,now),/固定止损/);
+  assert.equal(exitReason(p,150000000,now),null);assert(!p.trailingActive);
+  assert.equal(exitReason({...p},10000000,now),null);
+  assert.equal(exitReason(p,199999999,now),null);assert(!p.trailingActive);
+  assert.equal(exitReason(p,200000000,now),null);assert(p.trailingActive);
+  assert.equal(exitReason(p,160000001,now),null);
+  assert.match(exitReason(p,160000000,now),/20%/);
   assert.match(exitReason({...p},100000000,now+1800000),/30 分钟/);
+});
+test('old unsubmitted exits migrate, premature activation resets, closed trades are preserved',()=>{
+  const p={costLamports:100,highLamports:150,trailingActive:true,exitReason:'固定止损 -15%',status:'open'};
+  migrateLiveExit(p);assert.equal(p.trailingActive,false);assert.equal(p.exitReason,null);
+  const peak={costLamports:100,highLamports:250,trailingActive:true,status:'open'};migrateLiveExit(peak);assert.equal(peak.trailingActive,true);
+  const closed={...p,exitVersion:undefined,status:'closed',exitReason:'固定止损 -15%'};migrateLiveExit(closed);assert.equal(closed.exitReason,'固定止损 -15%');
 });
 test('chain receipts measure actual wallet delta, including fees and Token2022 net quantity',async()=>{
   const tx={blockTime:now/1000,transaction:{message:{accountKeys:['wallet']}},meta:{err:null,fee:5000,preBalances:[1000000000],postBalances:[898000000],preTokenBalances:[],postTokenBalances:[{owner:'wallet',mint:'coin',uiTokenAmount:{amount:'995'}}]}};

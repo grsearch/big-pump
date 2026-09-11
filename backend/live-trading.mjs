@@ -2,13 +2,18 @@ import {Jupiter, SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
 import {LiveWallet} from './live-wallet.mjs';
 import {diffusionBase, diffusionDefaults} from '../lib/diffusion-shadow.ts';
 
+export function migrateLiveExit(position) {
+  if(position.exitVersion==='trailing-100-20-v1'||position.status==='closed')return;
+  position.trailingActive=(position.highLamports??0)>=position.costLamports*2;
+  if(['固定止损 -15%','固定止盈 +50%','移动止盈（高点回撤 5%）'].includes(position.exitReason))position.exitReason=null;
+  position.exitVersion='trailing-100-20-v1';
+}
 export function exitReason(position, value, now) {
+  migrateLiveExit(position);
   position.highLamports = Math.max(position.highLamports ?? 0, value);
-  if (value >= position.costLamports * 1.2) position.trailingActive = true;
+  if (value >= position.costLamports * 2) position.trailingActive = true;
   if (now - position.openedAt >= 1800000) return '最大持仓时间 30 分钟';
-  if (value <= position.costLamports * .85) return '固定止损 -15%';
-  if (value >= position.costLamports * 1.5) return '固定止盈 +50%';
-  if (position.trailingActive && value <= position.highLamports * .95) return '移动止盈（高点回撤 5%）';
+  if (position.trailingActive && value <= position.highLamports * .8) return '移动止盈（高点回撤 20%）';
   return null;
 }
 
@@ -85,6 +90,7 @@ export class LiveTrading {
     } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming') this.s.put('live-order', id, {...intent, status:'skipped', reason:e.message});}
   }
   async checkExit(position) {
+    migrateLiveExit(position);
     if (this.clock() - position.openedAt >= 1800000) position.exitReason ??= '最大持仓时间 30 分钟';
     position.checkedAt = this.clock(); this.s.put('live-position', position.ca, position);
     try {
