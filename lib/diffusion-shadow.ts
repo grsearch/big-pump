@@ -1,5 +1,6 @@
 import {buyFill,sellFill} from './shadow.ts';
 import {executionReady} from './execution.ts';
+import {newStonkArm,stonkStep} from './stonk-shadow.ts';
 
 export const DIFFUSION_VERSION='shadow-diffusion-v1';
 export const diffusionDefaults={positionUsd:50,initialCash:1000,minFdv:20000,maxFdv:500000,minLp:15000,maxAgeHours:3,
@@ -13,7 +14,7 @@ export function validateDiffusionRules(v:any) {
 }
 export function newDiffusionRun(now:number,r=diffusionDefaults) {
   return {id:String(now),version:DIFFUSION_VERSION,startedAt:now,status:'running',acceptEntries:true,rules:{...r},
-    arms:['early','breakout'].map(id=>({id,cash:r.initialCash,equity:r.initialCash,peak:r.initialCash,maxDrawdown:0,positions:[],candidates:{},seen:{}}))};
+    arms:[...['early','breakout'].map(id=>({id,cash:r.initialCash,equity:r.initialCash,peak:r.initialCash,maxDrawdown:0,positions:[],candidates:{},seen:{}})),newStonkArm(now,r.initialCash)]};
 }
 const fresh=(t:any,now:number)=>executionReady(t,now)&&!t.shadowBlocked&&!t.marketError&&t.priceUsd>0&&t.lp>0&&t.marketAt<=now&&now-t.marketAt<=60000;
 export function diffusionBase(t:any,r:any,now:number) {
@@ -42,7 +43,9 @@ export function diffusionExit(p:any,t:any,r:any,now:number) {
 }
 export function diffusionStep(state:any,tokens:any[],now:number) {
   const n=structuredClone(state),r=n.rules;
+  if(!n.arms.some((a:any)=>a.id==='graduation'))n.arms.push(newStonkArm(now,r.initialCash));
   for(const arm of n.arms) {
+    if(arm.id==='graduation'){stonkStep(arm,tokens,n,now);continue;}
     arm.candidates??={};arm.seen??={};
     for(const p of arm.positions) {
       if(!['open','pending'].includes(p.status))continue;
