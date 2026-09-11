@@ -5,9 +5,14 @@ import {stonkExit} from '../lib/stonk-shadow.ts';
 const now=1800000000000;
 const t=(extra={})=>({ca:'s',symbol:'S',source:'stonk',graduatedAt:now,marketAt:now,priceUsd:1,lp:30000,fdv:30000,
   execution:{at:now,priceAt:now,quotePriceUsd:1,baseFee:{bps:0,maxFee:0,decimals:6},quoteFee:{bps:0,maxFee:0,decimals:6}},...extra});
-test('C buys fresh Stonk graduation without X; waits for newer delayed quote',()=>{
-  let run=diffusionStep(newDiffusionRun(now),[t()],now);let c=run.arms[2];assert.equal(c.positions[0].status,'pending');assert.equal(run.arms[0].positions.length,0);
-  run=diffusionStep(run,[t({marketAt:now+16000})],now+16000);c=run.arms[2];assert.equal(c.positions[0].status,'open');assert.equal(c.cash,950);
+test('C buys on the graduation tick with valid data, without X, FDV gate or artificial latency',()=>{
+  const run=diffusionStep(newDiffusionRun(now),[t({fdv:5000})],now),c=run.arms[2];assert.equal(c.positions[0].status,'open');assert.equal(run.arms[0].positions.length,0);
+  assert.equal(c.positions[0].openedAt,now);assert.equal(c.positions[0].fills[0].signalDelayMs,0);assert.equal(c.cash,950);
+});
+test('C waits for real post-signal data and fills at first valid quote, before 15 seconds',()=>{
+  let run=diffusionStep(newDiffusionRun(now),[t({marketAt:now-1000})],now);assert.equal(run.arms[2].positions[0].status,'pending');
+  run=diffusionStep(run,[t({marketAt:now+1000,shadowBlocked:'unsupported'})],now+1000);assert.equal(run.arms[2].positions[0].status,'pending');
+  run=diffusionStep(run,[t({marketAt:now+2000,fdv:null})],now+2000);assert.equal(run.arms[2].positions[0].status,'open');assert.equal(run.arms[2].positions[0].openedAt,now+2000);
 });
 test('C rejects old graduations and Pump; upgrades do not backfill old coins',()=>{
   const run=newDiffusionRun(now);run.arms.pop();
