@@ -5,12 +5,6 @@ import {SOL} from './jupiter.mjs';
 const TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 const ASSOCIATED = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
-export function simulationFailure(value){
- const err=value?.err??null;
- const logs=(value?.logs??[]).filter(x=>typeof x==='string'&&/^Program(?: log:| data:| [1-9A-HJ-NP-Za-km-z]+ (?:invoke|success|failed))/.test(x)&&!x.startsWith('Program data:')).slice(-12).map(x=>x.slice(0,400));
- const detail=err?JSON.stringify(err).slice(0,600):!value?'RPC 未返回模拟结果':'模拟未返回钱包账户';
- return Object.assign(Error('交易模拟失败：'+detail),{retryable:err==='BlockhashNotFound',diagnostic:{stage:'simulateTransaction',error:err,logs,unitsConsumed:value?.unitsConsumed??null}});
-}
 function base58(bytes) {
   const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
   let n = BigInt('0x' + Buffer.from(bytes).toString('hex')), result = '';
@@ -53,14 +47,6 @@ export class LiveWallet {
     if (side === 'buy' && prior > 0n) throw Error('钱包已持有该币，避免混入历史仓位');
     if (side === 'sell' && prior < BigInt(q.inAmount)) throw Error('链上代币余额不足');
     if (balance < fees + (side === 'buy' ? Number(q.inAmount) + maxFeeLamports : 0) + 1000000) throw Error('SOL 余额不足（保留卖出费用）');
-    const simulated = await this.rpc('simulateTransaction', [q.transaction, {encoding:'base64', sigVerify:false, commitment:'confirmed', accounts:{encoding:'base64', addresses:[this.address, ata]}}]);
-    const v = simulated?.value;
-    if (!v || v.err || !v.accounts?.[0]) throw simulationFailure(v);
-    const afterBalance = v.accounts[0].lamports, afterQuantity = tokenAmount(v.accounts[1]);
-    if (!Number.isSafeInteger(afterBalance)) throw Error('模拟余额不可用');
-    if (side === 'buy') {
-      if (balance - afterBalance > Number(q.inAmount) + maxFeeLamports || afterQuantity - prior < BigInt(q.otherAmountThreshold)) throw Error('模拟买入金额或到账数量不符合报价');
-    } else if (prior - afterQuantity !== BigInt(q.inAmount) || BigInt(afterBalance - balance + fees) < BigInt(q.otherAmountThreshold)) throw Error('模拟卖出金额不符合报价');
     if (Date.now() - q.receivedAt > 10000) throw Error('核验完成时报价已过期');
     tx.sign([this.keypair]);
     return {signature:base58(tx.signatures[0]), signedTransaction:Buffer.from(tx.serialize()).toString('base64')};

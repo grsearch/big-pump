@@ -3,14 +3,9 @@ import assert from 'node:assert/strict';
 import {Store} from '../backend/store.mjs';
 import {Jupiter, SOL, BUY_LAMPORTS, validateOrder} from '../backend/jupiter.mjs';
 import {LiveTrading, exitReason, migrateLiveExit, LIVE_C} from '../backend/live-trading.mjs';
-import {LiveWallet,simulationFailure} from '../backend/live-wallet.mjs';
+import {LiveWallet} from '../backend/live-wallet.mjs';
 import {Keypair,TransactionMessage,VersionedTransaction} from '@solana/web3.js';
 const now=1800000000000;
-test('simulation preserves instruction errors and bounded logs; only expired blockhash is retryable',()=>{
- const e=simulationFailure({err:{InstructionError:[3,{Custom:6001}]},logs:Array(30).fill('Program log: Error: slippage'),unitsConsumed:123});
- assert.match(e.message,/6001/);assert.equal(e.retryable,false);assert.equal(e.diagnostic.logs.length,12);assert.equal(e.diagnostic.error.InstructionError[0],3);
- assert.equal(simulationFailure({err:'BlockhashNotFound'}).retryable,true);assert.equal(simulationFailure(null).retryable,false);
-});
 const quote=(extra={})=>({inputMint:SOL,outputMint:'coin',inAmount:BUY_LAMPORTS,outAmount:'1000',otherAmountThreshold:'990',swapMode:'ExactIn',slippageBps:100,
   signatureFeeLamports:5000,prioritizationFeeLamports:10000,rentFeeLamports:2000000,taker:'wallet',transaction:'test-only',requestId:'req',receivedAt:now,...extra});
 const token=(extra={})=>({ca:'coin',symbol:'C',source:'stonk',migrationVerified:true,creationVerified:true,createdAt:now-60000,status:'observing',graduatedAt:now,marketAt:now,priceUsd:1,fdv:30000,lp:30000,xObservations:[{at:now,newAuthors:2,firstBatch:true}],...extra});
@@ -160,21 +155,19 @@ test('chain receipts measure actual wallet delta, including fees and Token2022 n
   assert.equal(r.quantity,'995');assert.equal(r.solDelta,-102000000);
 });
 
-test('local signer checks payer, fee cap, simulation error and minimum net output before signing',async()=>{
+test('local signer skips simulation and retains payer, fee and balance checks',async()=>{
   const keypair=Keypair.generate(),mint=Keypair.generate().publicKey.toBase58();
   const tx=new VersionedTransaction(new TransactionMessage({payerKey:keypair.publicKey,recentBlockhash:Keypair.generate().publicKey.toBase58(),instructions:[]}).compileToV0Message());
-  let output=1000n,simulationError=null,spent=102015000;
-  const rpc=async method=>{
+  let balance=1000000000;const calls=[];
+  const rpc=async method=>{calls.push(method);
     if(method==='getAccountInfo')return {value:{owner:'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'}};
-    if(method==='getMultipleAccounts')return {value:[{lamports:1000000000},null]};
-    if(method==='simulateTransaction'){const bytes=Buffer.alloc(165);bytes.writeBigUInt64LE(output,64);return {value:{err:simulationError,accounts:[{lamports:1000000000-spent},{data:[bytes.toString('base64'),'base64']}]}};}
+    if(method==='getMultipleAccounts')return {value:[{lamports:balance},null]};
     throw Error('Unexpected RPC');
   };
   const wallet={address:keypair.publicKey.toBase58(),keypair,rpc};
   const q=quote({outputMint:mint,taker:wallet.address,receivedAt:Date.now(),transaction:Buffer.from(tx.serialize()).toString('base64')});
   await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',1000),/费用/);
-  simulationError={InstructionError:[0,'Custom']};await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000),/模拟失败/);
-  simulationError=null;output=980n;await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000),/到账数量/);
-  output=1000n;spent=200000000;await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000),/买入金额/);
-  spent=102015000;wallet.address=Keypair.generate().publicKey.toBase58();await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000),/付款路由/);
+  const signed=await LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000);assert(signed.signature);assert.deepEqual(calls,['getAccountInfo','getMultipleAccounts']);
+  balance=0;await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000),/余额不足/);
+  balance=1000000000;wallet.address=Keypair.generate().publicKey.toBase58();await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000),/付款路由/);
 });
