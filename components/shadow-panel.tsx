@@ -21,7 +21,7 @@ export default function ShadowPanel({data,demo,online,busy,act}:any) {
   return <>
     <div className="section-intro"><h2>Shadow：新增即买 / 扩散突破 / Stonk 毕业</h2><p>三组独立模拟资金，不设持仓数量上限。每币每组实际买入最多一次，不补仓；AI 与聪明钱包不作为A/B 的入场门槛。</p></div>
     <div className="panel settings-panel" role="status"><h2>{state}</h2><p className="muted">{lastCheck?'最近策略检查：'+new Date(lastCheck).toLocaleTimeString('zh-CN'):'尚无策略检查记录'}{run?' · 已运行 '+Math.max(0,Math.floor((now-run.startedAt)/60000))+' 分钟':''}</p>{run&&!run.arms.some((a:any)=>a.positions.length)&&<p>尚未产生买入信号，因此资金未变化，暂时不能评价策略收益。下方可查看当前未入场原因。</p>}{data?.xBlocked&&<p className="amber">X 已暂停请求，新增作者信号暂时无法更新。</p>}{data?.xEnabled===false&&<p className="amber">X 付费采集尚未开启，无法获得新的真实讨论信号。</p>}</div>
-    <div className="notice">C：Stonk 毕业即记录买入信号，不依赖 X；+40% 激活移动止盈、回撤 10% 退出，FDV 跌破 $10,000 或持仓满 15 分钟卖出。C 不使用 A/B 的固定止盈止损；单笔金额和模拟费用沿用实验设置。首次启用不追买旧币。<br/>X 按 15 / 30 / 60 / 120 秒分级；15 秒池最多 5 币，每币最多加速 3 分钟。持仓行情目标每 5 秒查询，受请求耗时、限流和行情源更新速度约束。买卖仍有延迟、滑点、手续费及税费；缺行情不伪造成交。</div>
+    <div className="notice">C：Stonk 毕业即记录买入信号，不依赖 X；+40% 激活移动止盈、回撤 10% 退出，持仓满 15 分钟卖出。C 不使用 A/B 的固定止盈止损；单笔金额和模拟费用沿用实验设置。首次启用不追买旧币。<br/>X 按 15 / 30 / 60 / 120 秒分级；15 秒池最多 5 币，每币最多加速 3 分钟。持仓行情目标每 5 秒查询，受请求耗时、限流和行情源更新速度约束。买卖仍有延迟、滑点、手续费及税费；缺行情不伪造成交。</div>
     {!run||run.status==='finished'?<form className="panel settings-panel" onSubmit={e=>{e.preventDefault();act('/shadow/start',{rules});}}>
       <h2>开始新实验</h2><button className="button primary" disabled={busy||demo||!online}>开始新策略实验</button><details><summary>查看或调整参数（默认：单笔 $50、每组 $1,000）</summary><div className="settings-grid">{([
         ['positionUsd','单笔投入 / USD'],['initialCash','每组资金 / USD'],['minLp','最低 LP / USD'],['minNewAuthors','即时组最低新作者'],

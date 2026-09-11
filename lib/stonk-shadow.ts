@@ -15,7 +15,6 @@ export function stonkWaitReason(t:any,now:number) {
 export function stonkExit(p:any,t:any,r:any,now:number) {
   if(now-p.openedAt>=900000)return '持仓满 15 分钟';
   if(!ready(t,now))return null;
-  if(t.fdv>0&&t.fdv<10000)return 'FDV 跌破 $10,000';
   const value=sellFill(t.priceUsd,t.lp,p.quantity,r,t).proceeds;
   p.highValue=Math.max(p.highValue??0,value);
   if(value>=p.cost*1.4)p.trailingActive=true;
@@ -39,6 +38,8 @@ export function stonkStep(arm:any,tokens:any[],run:any,now:number) {
       captureStonkReview(p,t,now);
     }
     if(p.status!=='open')continue;
+    // Retire an unfilled exit queued by the old C rule; completed trades stay unchanged.
+    if(p.pendingExit?.reason==='FDV 跌破 $10,000')p.pendingExit=null;
     if(p.pendingExit&&ready(t,now)&&t.marketAt>=p.pendingExit.at+r.latencyMs) {
       const fill=sellFill(t.priceUsd,t.lp,p.quantity,r,t);
       if(Number.isFinite(fill.proceeds)){
