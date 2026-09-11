@@ -19,9 +19,9 @@ function setup() {
 }
 test('Jupiter requests fixed 0.0003 SOL priority fee for buy and sell, without added Jito tip',async()=>{
  const s=new Store(':memory:'),urls=[];
- const j=new Jupiter(s,{JUPITER_API_KEY:'test'},async url=>{const p=new URL(url).searchParams;urls.push(p);return Response.json(quote({inputMint:p.get('inputMint'),outputMint:p.get('outputMint'),inAmount:p.get('amount'),prioritizationFeeLamports:300000}));},()=>now);
+ const j=new Jupiter(s,{JUPITER_API_KEY:'test'},async url=>{const p=new URL(url).searchParams;urls.push(p);if(p.has('jitoTipLamports')&&Number(p.get('jitoTipLamports'))<1000)return Response.json({error:'tip must be at least 1000'},{status:400});return Response.json(quote({inputMint:p.get('inputMint'),outputMint:p.get('outputMint'),inAmount:p.get('amount'),prioritizationFeeLamports:300000}));},()=>now);
  for(const side of ['buy','sell'])await j.order(side==='buy'?SOL:'coin',side==='buy'?'coin':SOL,BUY_LAMPORTS,side,'wallet');
- assert.equal(j.status().priorityFeeLamports,300000);for(const p of urls){assert.equal(p.get('priorityFeeLamports'),'300000');assert.equal(p.get('broadcastFeeType'),'exactFee');assert.equal(p.get('jitoTipLamports'),'0');}
+ assert.equal(j.status().priorityFeeLamports,300000);for(const p of urls){assert.equal(p.get('priorityFeeLamports'),'300000');assert.equal(p.get('broadcastFeeType'),'exactFee');assert.equal(p.has('jitoTipLamports'),false);}
  assert.equal(new Jupiter(s,{LIVE_PRIORITY_FEE_LAMPORTS:'200000'}).priorityFeeLamports,200000);
  assert.throws(()=>new Jupiter(s,{LIVE_PRIORITY_FEE_LAMPORTS:'-1'}));s.close();
 });

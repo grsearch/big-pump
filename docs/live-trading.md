@@ -37,7 +37,7 @@
 
 ## 待核对订单
 
-优先费通过 Jupiter `/order` 的 `priorityFeeLamports` 和 `broadcastFeeType=exactFee` 设置，`jitoTipLamports=0` 不额外添加 Jito 小费；买卖报价与反向路由检查使用一致设置。基础费由网络规定。费用仍受 `LIVE_MAX_FEE_LAMPORTS` 总上限约束。服务器可显式加入 `LIVE_PRIORITY_FEE_LAMPORTS=300000` 并重启，以实盘页面显示的运行配置为准。
+优先费通过 Jupiter `/order` 的 `priorityFeeLamports` 和 `broadcastFeeType=exactFee` 设置，不使用额外 Jito 小费时省略 `jitoTipLamports`（显式传 0 会被接口拒绝）；买卖报价与反向路由检查使用一致设置。基础费由网络规定。费用仍受 `LIVE_MAX_FEE_LAMPORTS` 总上限约束。服务器可显式加入 `LIVE_PRIORITY_FEE_LAMPORTS=300000` 并重启，以实盘页面显示的运行配置为准。
 
 升级到 15% 滑点时，服务器若已有 `LIVE_SLIPPAGE_BPS=100`，必须改为 `LIVE_SLIPPAGE_BPS=1500` 并重启后台；旧环境变量不会随 Git 更新。以实盘页面显示的运行值为准。15% 是相对报价的最大容许滑点，不是固定手续费。
 

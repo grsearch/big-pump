@@ -31,7 +31,7 @@ export class Jupiter {
     const params = new URLSearchParams({inputMint, outputMint, amount, slippageBps: String(slippageBps), excludeRouters:'jupiterz'});
     params.set('priorityFeeLamports',String(this.priorityFeeLamports));
     params.set('broadcastFeeType','exactFee');
-    params.set('jitoTipLamports','0');
+    // Optional tip must be omitted when unused: explicit zero is rejected by Jupiter.
     if (taker) params.set('taker', taker);
     let response;
     try {response = await this.fetch('https://api.jup.ag/swap/v2/order?' + params, {
