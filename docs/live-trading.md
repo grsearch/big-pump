@@ -15,6 +15,7 @@
 | ENABLE_LIVE_TRADING | false | 所有者改为 true 后，后端才加载签名钱包 |
 | JUPITER_REQUESTS_PER_MINUTE | 60 | 此程序可使用的共享报价额度 |
 | LIVE_SLIPPAGE_BPS | 1500 | 买卖滑点上限 15%，失败不会自动提高 |
+| LIVE_PRIORITY_FEE_LAMPORTS | 300000 | 买卖固定优先费 0.0003 SOL；基础费和租金另计 |
 | LIVE_MAX_FEE_LAMPORTS | 5000000 | 单笔网络/优先费/租金总上限 0.005 SOL，不含买入本金 |
 
 安装新依赖、运行测试和构建、重启后，在「实盘 C」检查地址、费用限制与配置状态。由所有者勾选每笔 0.1 SOL 并点击「启用实盘 C」，才开始接收新信号。私钥只保留在后端进程内，不经过前端。继续使用原有 nginx Basic Auth 保护整个页面和 API。
@@ -35,6 +36,8 @@
 - 「暂停新买入」继续管理已有仓位。停止采集也会停止新买入，但独立实盘定时器继续卖出。停止后端进程则无法执行退出。重启时保留原有开仓开关；不要配置进程在多个实例中共用同一钱包或数据库。
 
 ## 待核对订单
+
+优先费通过 Jupiter `/order` 的 `priorityFeeLamports` 和 `broadcastFeeType=exactFee` 设置，`jitoTipLamports=0` 不额外添加 Jito 小费；买卖报价与反向路由检查使用一致设置。基础费由网络规定。费用仍受 `LIVE_MAX_FEE_LAMPORTS` 总上限约束。服务器可显式加入 `LIVE_PRIORITY_FEE_LAMPORTS=300000` 并重启，以实盘页面显示的运行配置为准。
 
 升级到 15% 滑点时，服务器若已有 `LIVE_SLIPPAGE_BPS=100`，必须改为 `LIVE_SLIPPAGE_BPS=1500` 并重启后台；旧环境变量不会随 Git 更新。以实盘页面显示的运行值为准。15% 是相对报价的最大容许滑点，不是固定手续费。
 

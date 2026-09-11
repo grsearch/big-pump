@@ -17,6 +17,14 @@ function setup() {
   const engine=new LiveTrading(s,env,null,{wallet,jupiter,clock:()=>at});
   return {s,engine,wallet,jupiter,env,calls,clock:n=>{at=n;},receipt:r=>{receipt=r;},submitted:()=>submitted};
 }
+test('Jupiter requests fixed 0.0003 SOL priority fee for buy and sell, without added Jito tip',async()=>{
+ const s=new Store(':memory:'),urls=[];
+ const j=new Jupiter(s,{JUPITER_API_KEY:'test'},async url=>{const p=new URL(url).searchParams;urls.push(p);return Response.json(quote({inputMint:p.get('inputMint'),outputMint:p.get('outputMint'),inAmount:p.get('amount'),prioritizationFeeLamports:300000}));},()=>now);
+ for(const side of ['buy','sell'])await j.order(side==='buy'?SOL:'coin',side==='buy'?'coin':SOL,BUY_LAMPORTS,side,'wallet');
+ assert.equal(j.status().priorityFeeLamports,300000);for(const p of urls){assert.equal(p.get('priorityFeeLamports'),'300000');assert.equal(p.get('broadcastFeeType'),'exactFee');assert.equal(p.get('jitoTipLamports'),'0');}
+ assert.equal(new Jupiter(s,{LIVE_PRIORITY_FEE_LAMPORTS:'200000'}).priorityFeeLamports,200000);
+ assert.throws(()=>new Jupiter(s,{LIVE_PRIORITY_FEE_LAMPORTS:'-1'}));s.close();
+});
 test('live defaults to 15 percent, propagates it to quotes, respects overrides and rejects larger limits',async()=>{
  const f=setup();assert.equal(f.engine.slippageBps,1500);f.engine.control('start');f.s.put('token','coin',token());
  const original=f.jupiter.order,limits=[];f.jupiter.order=async(...args)=>{limits.push(args[5]);return original(...args);};await f.engine.tick(true);assert.deepEqual(limits,[1500,1500]);

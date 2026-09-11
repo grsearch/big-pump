@@ -8,11 +8,13 @@ export class Jupiter {
   constructor(store, env = process.env, fetcher = fetch, clock = Date.now) {
     this.s = store; this.env = env; this.fetch = fetcher; this.clock = clock;
     this.limit = Number(env.JUPITER_REQUESTS_PER_MINUTE ?? 60);
+    this.priorityFeeLamports = Number(env.LIVE_PRIORITY_FEE_LAMPORTS ?? 300000);
+    if(!Number.isSafeInteger(this.priorityFeeLamports)||this.priorityFeeLamports<0)throw Error('优先费配置无效');
     if (!Number.isInteger(this.limit) || this.limit < 12 || this.limit > 9000) throw Error('Jupiter 请求额度无效');
   }
   status() {
     const now = this.clock(), saved = this.s.get('config', 'jupiter-rate') ?? {};
-    return {configured: !!this.env.JUPITER_API_KEY, limit: this.limit,
+    return {configured: !!this.env.JUPITER_API_KEY, limit: this.limit, priorityFeeLamports:this.priorityFeeLamports,
       used: (saved.calls ?? []).filter(at => now - at < 60000).length,
       blockedUntil: saved.blockedUntil ?? 0};
   }
@@ -27,6 +29,9 @@ export class Jupiter {
     if (!integer(amount) || BigInt(amount) <= 0n) throw Error('报价数量无效');
     this.reserve(side);
     const params = new URLSearchParams({inputMint, outputMint, amount, slippageBps: String(slippageBps), excludeRouters:'jupiterz'});
+    params.set('priorityFeeLamports',String(this.priorityFeeLamports));
+    params.set('broadcastFeeType','exactFee');
+    params.set('jitoTipLamports','0');
     if (taker) params.set('taker', taker);
     let response;
     try {response = await this.fetch('https://api.jup.ag/swap/v2/order?' + params, {
