@@ -1,0 +1,141 @@
+import {Jupiter, SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
+import {LiveWallet} from './live-wallet.mjs';
+import {diffusionBase, diffusionDefaults} from '../lib/diffusion-shadow.ts';
+
+export function exitReason(position, value, now) {
+  position.highLamports = Math.max(position.highLamports ?? 0, value);
+  if (value >= position.costLamports * 1.2) position.trailingActive = true;
+  if (now - position.openedAt >= 1800000) return '最大持仓时间 30 分钟';
+  if (value <= position.costLamports * .85) return '固定止损 -15%';
+  if (value >= position.costLamports * 1.5) return '固定止盈 +50%';
+  if (position.trailingActive && value <= position.highLamports * .95) return '移动止盈（高点回撤 5%）';
+  return null;
+}
+
+export class LiveTrading {
+  constructor(store, env, rpc, dependencies = {}) {
+    this.s = store; this.env = env; this.clock = dependencies.clock ?? Date.now;
+    this.jup = dependencies.jupiter ?? new Jupiter(store, env);
+    this.wallet = dependencies.wallet ?? null; this.error = ''; this.busy = false;
+    this.slippageBps = Number(env.LIVE_SLIPPAGE_BPS ?? 100);
+    this.maxFeeLamports = Number(env.LIVE_MAX_FEE_LAMPORTS ?? 5000000);
+    if (!Number.isInteger(this.slippageBps) || this.slippageBps < 1 || this.slippageBps > 500 || !Number.isSafeInteger(this.maxFeeLamports) || this.maxFeeLamports <= 0) this.error = '实盘滑点或费用配置无效';
+    if (!this.error && env.ENABLE_LIVE_TRADING === 'true' && !this.wallet) {
+      try {if (!rpc || !env.JUPITER_API_KEY) throw Error('请配置 Helius 和 Jupiter'); this.wallet = new LiveWallet(env, rpc);}
+      catch (e) {this.error = e.message;}
+    }
+    const boundWallet = this.state().wallet;
+    if (this.wallet && boundWallet && boundWallet !== this.wallet.address) this.error = '钱包与持久化实盘账本不一致，不能接管原钱包持仓';
+  }
+  state() {return this.s.get('config', 'live-trading') ?? {acceptEntries:false, startedAt:null, seen:{}};}
+  snapshot() {
+    const state = this.state();
+    return {...state, acceptEntries:state.acceptEntries && this.env.ENABLE_LIVE_TRADING === 'true' && !!this.wallet && !this.error,
+      enabled:this.env.ENABLE_LIVE_TRADING === 'true', configured:!!this.wallet && !this.error,
+      wallet:this.wallet?.address ?? this.env.LIVE_WALLET_ADDRESS ?? null, error:this.error, jupiter:this.jup.status(),
+      buySol:.1, slippageBps:this.slippageBps, maxFeeLamports:this.maxFeeLamports,
+      positions:this.s.all('live-position'), orders:this.s.all('live-order').map(({signedTransaction, ...publicOrder}) => publicOrder)};
+  }
+  control(action) {
+    const state = this.state();
+    if (action === 'pause') state.acceptEntries = false;
+    else if (action === 'start') {
+      if (this.env.ENABLE_LIVE_TRADING !== 'true' || !this.wallet || this.error) throw Error(this.error || '需由服务器所有者配置并启用实盘');
+      if (this.s.all('live-order').some(o => o.status === 'confirming')) throw Error('仍有订单等待链上确认');
+      state.acceptEntries = true; state.startedAt = this.clock(); state.seen = {}; state.wallet = this.wallet.address;
+    } else throw Error('操作无效');
+    this.s.put('config', 'live-trading', state);
+    this.s.event('live', action === 'pause' ? '实盘暂停开仓，继续管理持仓' : '实盘 A 已由操作人启用，每笔 0.1 SOL');
+    return {ok:true};
+  }
+  async tick(collectorRunning) {
+    if (this.busy || !this.wallet || this.error || this.env.ENABLE_LIVE_TRADING !== 'true') return;
+    this.busy = true;
+    try {
+      await this.reconcile();
+      const now = this.clock();
+      const positions = this.s.all('live-position').filter(p => p.status === 'open');
+      const pending = this.s.all('live-order').filter(o => o.status === 'confirming');
+      const due = positions.filter(p => !pending.some(o => o.ca === p.ca) && now - (p.checkedAt ?? 0) >= 5000).sort((a,b) => (a.checkedAt ?? 0) - (b.checkedAt ?? 0));
+      if (due.length) {await this.checkExit(due[0]); return;}
+      if (!collectorRunning || !this.state().acceptEntries || pending.length) return;
+      const state = this.state();
+      for (const t of this.s.all('token')) {
+        if (this.s.get('live-position', t.ca)) continue;
+        const o = t.xObservations?.at(-1);
+        if (!o || o.at < state.startedAt || o.at > now || now - o.at > 120000 || o.at <= (state.seen[t.ca] ?? 0) || o.newAuthors < 2 || !diffusionBase(t, diffusionDefaults, now)) continue;
+        state.seen[t.ca] = o.at; this.s.put('config', 'live-trading', state);
+        await this.buy(t, o); break;
+      }
+    } catch (e) {this.s.put('config', 'live-trading', {...this.state(), lastError:e.message, checkedAt:this.clock()});}
+    finally {this.busy = false;}
+  }
+  async buy(t, observation) {
+    const id = 'buy:' + t.ca + ':' + observation.at;
+    const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, side:'buy', at:this.clock(), signalAt:observation.at,
+      status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{newAuthors:observation.newAuthors, firstBatch:observation.firstBatch, fdv:t.fdv, lp:t.lp}};
+    this.s.put('live-order', id, intent);
+    try {
+      const q = await this.jup.order(SOL, t.ca, BUY_LAMPORTS, 'buy', this.wallet.address, this.slippageBps);
+      // Probe the reverse route before signing, not a guarantee of future liquidity.
+      await this.jup.order(t.ca, SOL, q.otherAmountThreshold, 'buy', undefined, this.slippageBps);
+      const current = this.s.get('token', t.ca);
+      if (!this.state().acceptEntries || this.clock() - observation.at > 120000 || !current || !diffusionBase(current, diffusionDefaults, this.clock())) throw Error('签名前入场条件失效');
+      await this.submit(intent, q);
+    } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming') this.s.put('live-order', id, {...intent, status:'skipped', reason:e.message});}
+  }
+  async checkExit(position) {
+    if (this.clock() - position.openedAt >= 1800000) position.exitReason ??= '最大持仓时间 30 分钟';
+    position.checkedAt = this.clock(); this.s.put('live-position', position.ca, position);
+    try {
+      const q = await this.jup.order(position.ca, SOL, position.quantity, 'sell', this.wallet.address, this.slippageBps);
+      const value = Number(netQuoteLamports(q));
+      if (!Number.isSafeInteger(value)) throw Error('卖出报价金额超出范围');
+      const reason = position.exitReason ?? exitReason(position, value, this.clock());
+      Object.assign(position, {markLamports:value, quoteAt:this.clock(), quoteError:null, exitReason:reason});
+      this.s.put('live-position', position.ca, position);
+      if (!reason) return;
+      const intent = {id:'sell:' + position.ca + ':' + this.clock(), ca:position.ca, symbol:position.symbol, side:'sell', at:this.clock(), status:'preparing', inputAmount:position.quantity, reason};
+      this.s.put('live-order', intent.id, intent);
+      try {await this.submit(intent, q);}
+      catch (e) {if (this.s.get('live-order', intent.id)?.status !== 'confirming') this.s.put('live-order', intent.id, {...intent, status:'skipped', reason:e.message}); throw e;}
+    } catch (e) {this.s.put('live-position', position.ca, {...position, quoteError:e.message});}
+  }
+  async submit(intent, quote) {
+    const signed = await this.wallet.prepare(quote, intent.side, this.maxFeeLamports);
+    if (intent.side === 'buy' && (!this.state().acceptEntries || this.clock() - intent.signalAt > 120000)) throw Error('签名后入场已暂停或过期');
+    const order = {...intent, ...signed, requestId:quote.requestId, lastValidBlockHeight:quote.lastValidBlockHeight, status:'confirming', quoteAt:quote.receivedAt, quotedOut:quote.outAmount, minimumOut:quote.otherAmountThreshold};
+    // Persist before any broadcast. A crash from here never causes automatic resubmission.
+    this.s.put('live-order', order.id, order);
+    const result = await this.wallet.execute(order);
+    this.s.put('live-order', order.id, {...order, reason:result.message, exitReason:intent.reason});
+  }
+  async reconcile() {
+    for (const order of this.s.all('live-order').filter(o => o.status === 'confirming')) {
+      if (this.clock() - (order.reconciledAt ?? 0) < 5000) continue;
+      order.reconciledAt = this.clock(); this.s.put('live-order', order.id, order);
+      let receipt;
+      try {receipt = await this.wallet.receipt(order);} catch {continue;}
+      if (!receipt) continue;
+      const {signedTransaction, ...publicOrder} = order;
+      this.s.db.exec('BEGIN');
+      try {
+        this.s.put('live-order', order.id, {...publicOrder, status:receipt.failed ? 'failed' : 'confirmed', receipt, confirmedAt:this.clock()});
+        if (!receipt.failed) {
+          if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, status:'open', quantity:receipt.quantity,
+            costLamports:-receipt.solDelta, openedAt:receipt.at, buySignature:order.signature, highLamports:0, trailingActive:false});
+          else {
+            const p = this.s.get('live-position', order.ca);
+            if (!p || receipt.quantity !== p.quantity) throw Error('卖出回执数量不一致');
+            this.s.put('live-position', order.ca, {...p, status:'closed', closedAt:receipt.at, proceedsLamports:receipt.solDelta,
+              realizedLamports:receipt.solDelta-p.costLamports, sellSignature:order.signature, exitReason:order.exitReason});
+          }
+        } else if (order.side === 'sell') {
+          const p = this.s.get('live-position', order.ca);
+          if (p) this.s.put('live-position', order.ca, {...p, costLamports:p.costLamports + receipt.feeLamports});
+        }
+        this.s.db.exec('COMMIT');
+      } catch (e) {this.s.db.exec('ROLLBACK'); throw e;}
+    }
+  }
+}

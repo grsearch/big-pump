@@ -41,3 +41,7 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# Dedicated trading wallet files must remain outside the repository.
+*.keypair.json
+/secrets/
