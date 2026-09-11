@@ -104,6 +104,14 @@ test('C uses 0.1 SOL, probes reverse route, persists intent before send, never a
   assert(!JSON.stringify(f.engine.snapshot()).includes('never-broadcast'));
   await f.engine.tick(true);assert.equal(f.submitted(),1);f.s.close();
 });
+test('CPMM C skips reverse quote and preserves transport across uncertain receipt and restart',async()=>{
+ const f=setup();f.engine.control('start');f.s.put('token','coin',token());const original=f.jupiter.order;
+ f.jupiter.order=async(...args)=>({...await original(...args),transport:'cpmm',pool:'verified-pool',quoteMint:SOL});
+ await f.engine.tick(true);assert.equal(f.calls.length,1);assert.equal(f.s.all('live-order')[0].transport,'cpmm');
+ const restarted=new LiveTrading(f.s,f.env,null,{wallet:f.wallet,jupiter:f.jupiter,clock:()=>now+10000});await restarted.tick(true);assert.equal(f.submitted(),1);
+ f.receipt({failed:false,quantity:'990',solDelta:-100305000,at:now,feeLamports:305000});const final=new LiveTrading(f.s,f.env,null,{wallet:f.wallet,jupiter:f.jupiter,clock:()=>now+20000});await final.tick(false);
+ assert.equal(f.s.get('live-position','coin').pool,'verified-pool');assert.equal(f.s.get('live-position','coin').transport,'cpmm');assert.equal(f.submitted(),1);f.s.close();
+});
 test('C rejects old/future graduations, unverified migration and failed program admission',async()=>{
  for(const patch of [{graduatedAt:now-1},{graduatedAt:now+1},{source:'pump'},{migrationVerified:false},{creationVerified:false},{createdAt:now-1200001}]){
  const f=setup();f.engine.control('start');f.s.put('token','coin',token(patch));await f.engine.tick(true);assert.equal(f.submitted(),0);f.s.close();

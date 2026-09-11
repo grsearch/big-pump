@@ -1,4 +1,5 @@
-import {Jupiter, SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
+import {SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
+import {SwapRouter} from './swap-router.mjs';
 import {LiveWallet} from './live-wallet.mjs';
 import {fastGraduation} from './stonk.mjs';
 export const LIVE_C='stonk-graduation-c-v1';
@@ -25,13 +26,13 @@ export class LiveTrading {
     this.s = store; this.env = env; this.clock = dependencies.clock ?? Date.now;
     const previous=store.get('config','live-trading');
     if(previous?.strategy!==LIVE_C)store.put('config','live-trading',{...previous,strategy:LIVE_C,acceptEntries:false,startedAt:null,seen:{},lastError:null});
-    this.jup = dependencies.jupiter ?? new Jupiter(store, env);
+    this.jup = dependencies.jupiter ?? new SwapRouter(store, env, rpc);
     this.wallet = dependencies.wallet ?? null; this.error = ''; this.busy = false;
     this.slippageBps = Number(env.LIVE_SLIPPAGE_BPS ?? 1500);
     this.maxFeeLamports = Number(env.LIVE_MAX_FEE_LAMPORTS ?? 5000000);
     if (!Number.isInteger(this.slippageBps) || this.slippageBps < 1 || this.slippageBps > 1500 || !Number.isSafeInteger(this.maxFeeLamports) || this.maxFeeLamports <= 0) this.error = '实盘滑点或费用配置无效';
     if (!this.error && env.ENABLE_LIVE_TRADING === 'true' && !this.wallet) {
-      try {if (!rpc || !env.JUPITER_API_KEY) throw Error('请配置 Helius 和 Jupiter'); this.wallet = new LiveWallet(env, rpc);}
+      try {if (!rpc) throw Error('请配置 Helius'); this.wallet = new LiveWallet(env, rpc);}
       catch (e) {this.error = e.message;}
     }
     const boundWallet = this.state().wallet;
@@ -97,7 +98,7 @@ export class LiveTrading {
     try {
       const q = await this.jup.order(SOL, t.ca, BUY_LAMPORTS, 'buy', this.wallet.address, this.slippageBps);
       // Probe the reverse route before signing, not a guarantee of future liquidity.
-      await this.jup.order(t.ca, SOL, q.otherAmountThreshold, 'buy', undefined, this.slippageBps);
+      if(q.transport!=='cpmm')await this.jup.order(t.ca, SOL, q.otherAmountThreshold, 'buy', undefined, this.slippageBps);
       const current = this.s.get('token', t.ca);
       if (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(current,this.state(),this.clock())) throw Error('签名前入场条件失效');
       await this.submit(intent, q);
@@ -116,7 +117,7 @@ export class LiveTrading {
       const value = Number(netQuoteLamports(q));
       if (!Number.isSafeInteger(value)) throw Error('卖出报价金额超出范围');
       const reason = position.exitReason ?? exitReason(position, value, this.clock());
-      Object.assign(position, {markLamports:value, quoteAt:this.clock(), quoteError:null, exitReason:reason});
+      Object.assign(position, {markLamports:value, quoteAt:this.clock(), quoteError:null, exitReason:reason,quoteTransport:q.transport??'jupiter',fallbackReason:q.fallbackReason??null});
       this.s.put('live-position', position.ca, position);
       if (!reason) return;
       const intent = {id:'sell:' + position.ca + ':' + this.clock(), ca:position.ca, symbol:position.symbol, side:'sell', at:this.clock(), status:'preparing', inputAmount:position.quantity, reason};
@@ -128,7 +129,7 @@ export class LiveTrading {
   async submit(intent, quote) {
     const signed = await this.wallet.prepare(quote, intent.side, this.maxFeeLamports);
     if (intent.side === 'buy' && (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(this.s.get('token',intent.ca),this.state(),this.clock()))) throw Error('签名后入场已暂停或过期');
-    const order = {...intent, ...signed, requestId:quote.requestId, lastValidBlockHeight:quote.lastValidBlockHeight, status:'confirming', quoteAt:quote.receivedAt, quotedOut:quote.outAmount, minimumOut:quote.otherAmountThreshold};
+    const order = {...intent, ...signed, transport:quote.transport??'jupiter',pool:quote.pool,quoteMint:quote.quoteMint,fallbackReason:quote.fallbackReason??null,requestId:quote.requestId, lastValidBlockHeight:quote.lastValidBlockHeight, status:'confirming', quoteAt:quote.receivedAt, quotedOut:quote.outAmount, minimumOut:quote.otherAmountThreshold};
     // Persist before any broadcast. A crash from here never causes automatic resubmission.
     this.s.put('live-order', order.id, order);
     const result = await this.wallet.execute(order);
@@ -147,7 +148,7 @@ export class LiveTrading {
         this.s.put('live-order', order.id, {...publicOrder, status:receipt.failed ? 'failed' : 'confirmed', receipt, confirmedAt:this.clock()});
         if (!receipt.failed) {
           if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, strategy:order.strategy??'legacy-a', status:'open', quantity:receipt.quantity,
-            costLamports:-receipt.solDelta, openedAt:receipt.at, buySignature:order.signature, highLamports:0, trailingActive:false});
+            costLamports:-receipt.solDelta, openedAt:receipt.at, buySignature:order.signature,pool:order.pool,quoteMint:order.quoteMint,migrationVerified:order.transport==='cpmm',transport:order.transport, highLamports:0, trailingActive:false});
           else {
             const p = this.s.get('live-position', order.ca);
             if (!p || receipt.quantity !== p.quantity) throw Error('卖出回执数量不一致');

@@ -46,12 +46,16 @@ export class LiveWallet {
     if (!Number.isSafeInteger(balance)) throw Error('钱包余额不可用');
     if (side === 'buy' && prior > 0n) throw Error('钱包已持有该币，避免混入历史仓位');
     if (side === 'sell' && prior < BigInt(q.inAmount)) throw Error('链上代币余额不足');
-    if (balance < fees + (side === 'buy' ? Number(q.inAmount) + maxFeeLamports : 0) + 1000000) throw Error('SOL 余额不足（保留卖出费用）');
+    if (balance < fees + (side === 'buy' ? Number(q.inAmount) + maxFeeLamports : 0) + (q.temporaryRentLamports??0) + 1000000) throw Error('SOL 余额不足（保留卖出费用）');
     if (Date.now() - q.receivedAt > 10000) throw Error('核验完成时报价已过期');
     tx.sign([this.keypair]);
     return {signature:base58(tx.signatures[0]), signedTransaction:Buffer.from(tx.serialize()).toString('base64')};
   }
   async execute(order) {
+    if(order.transport==='cpmm'){
+      try{const signature=await this.rpc('sendTransaction',[order.signedTransaction,{encoding:'base64',skipPreflight:true,maxRetries:0,preflightCommitment:'confirmed'}]);return {message:signature===order.signature?'CPMM 已提交，等待链上确认':'CPMM 提交结果不明，等待链上核对'};}
+      catch{return {message:'CPMM 提交结果不明，等待链上核对'};}
+    }
     // A timeout or a Failed response is not proof of non-inclusion; always reconcile the signature.
     try {
       const response = await this.fetch('https://api.jup.ag/swap/v2/execute', {method:'POST', headers:{'content-type':'application/json','x-api-key':this.env.JUPITER_API_KEY},
