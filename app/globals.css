@@ -6,3 +6,4 @@
 .ca-actions{display:flex;align-items:center;gap:9px;font-size:12px}.token-title+.ca-actions{margin-top:9px;margin-left:43px}.ca-actions a{color:#99bcef;overflow-wrap:anywhere}.ca-actions a:hover{text-decoration:underline}.ca-actions .copy{flex-shrink:0}
 
 .pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:16px 22px;border-top:1px solid var(--line);flex-wrap:wrap}.pagination>span{margin-right:auto;color:var(--muted);font-size:12px}
+.shadow-reason{white-space:normal;overflow-wrap:anywhere;word-break:break-word;min-width:180px;max-width:360px;line-height:1.65}
