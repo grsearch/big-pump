@@ -8,9 +8,9 @@ const discriminator=createHash('sha256').update('global:migrate_to_cpswap').dige
 const address=x=>typeof x==='string'&&/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(x);
 function decode58(s){if(typeof s!=='string'||s.length>200)return null;let n=0n;for(const c of s){const i='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'.indexOf(c);if(i<0)return null;n=n*58n+BigInt(i);}let h=n.toString(16);if(h.length%2)h='0'+h;return Buffer.concat([Buffer.alloc(s.match(/^1*/)[0].length),n?Buffer.from(h,'hex'):Buffer.alloc(0)]);}
 // Decode only a successful, confirmed transaction; include v0 lookup-table accounts.
-export function decodeStonkMigration(tx,now=Date.now()){
+export function decodeStonkMigration(tx,now=Date.now(),maxAgeMs=86400000){
  if(!tx||!tx.meta||tx.meta.err||!Number.isFinite(tx.blockTime))return null;
- const at=tx.blockTime*1000;if(at>now||now-at>=86400000)return null;
+ const at=tx.blockTime*1000;if(at>now||now-at>=maxAgeMs)return null;
  const message=tx.transaction?.message;if(!message)return null;
  const keys=[...(message.accountKeys??[]).map(x=>typeof x==='string'?x:x.pubkey),...(tx.meta.loadedAddresses?.writable??[]),...(tx.meta.loadedAddresses?.readonly??[])];
  const instructions=[...(message.instructions??[]),...(tx.meta.innerInstructions??[]).flatMap(x=>x.instructions??[])];

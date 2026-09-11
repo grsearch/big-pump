@@ -7,7 +7,7 @@ export class Store {
  get(kind,id){const row=this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind,id);return row?JSON.parse(row.data):null;}
  all(kind){return this.db.prepare('SELECT data FROM records WHERE kind=?').all(kind).map(r=>JSON.parse(r.data));}
  put(kind,id,data){if(['token','ai-latest'].includes(kind)&&!this.get('token',id)&&this.get('token-reference',id))return data;this.db.prepare('INSERT INTO records VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data').run(kind,id,JSON.stringify(data));return data;}
- researchTokens(){return [...new Map([...this.all('token-reference'),...this.all('token')].map(t=>[t.ca,t])).values()];}
+ researchTokens(){return [...new Map([...this.all('history-reference'),...this.all('token-reference'),...this.all('token')].map(t=>[t.ca,t])).values()];}
  purgeExpired(now=Date.now()){
   const held=new Set(this.all('shadow-run').filter(r=>r.status==='running').flatMap(r=>r.arms.flatMap(a=>a.positions.filter(p=>['pending','open'].includes(p.status)).map(p=>p.ca))));
   const expired=this.all('token').filter(t=>['sleeping','archived'].includes(t.status)&&Number.isFinite(t.graduatedAt)&&now-t.graduatedAt>=86400000);
