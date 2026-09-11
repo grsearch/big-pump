@@ -19,6 +19,7 @@ export class Store {
    for(const kind of ['token','ai-latest','stonk-candidate'])this.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(kind,t.ca);
   }this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}return expired.length;
  }
+ allPosts(ca){return this.db.prepare('SELECT data FROM posts WHERE ca=? ORDER BY at ASC').all(ca).map(r=>JSON.parse(r.data));}
  posts(ca){return this.db.prepare('SELECT data FROM posts WHERE ca=? ORDER BY at DESC LIMIT 5000').all(ca).map(r=>JSON.parse(r.data));}
  post(p){if(!this.get('token',p.ca)&&this.get('token-reference',p.ca))return false;return Number(this.db.prepare('INSERT OR IGNORE INTO posts VALUES (?,?,?,?)').run(p.id,p.ca,p.at,JSON.stringify(p)).changes)>0;}
  charge(id,cost,now=Date.now()){return Number(this.db.prepare('INSERT OR IGNORE INTO charges VALUES (?,?,?)').run(new Date(now).toISOString().slice(0,10),id,cost).changes)>0;}
