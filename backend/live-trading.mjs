@@ -3,9 +3,10 @@ import {redact} from './audit.mjs';
 import {Jupiter, SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
 import {LiveWallet} from './live-wallet.mjs';
 import {fastGraduation} from './stonk.mjs';
+import {ENTRY_POLICY} from './live-entry.mjs';
 export const LIVE_C='stonk-graduation-c-v1';
 export const C_EXIT_POLICY={version:'c-stop30-trail40-10-time30-v1',stopLossPct:30,trailingActivationPct:40,trailingDrawdownPct:10,maxHoldMinutes:30};
-export function liveCEntry(t,state,now){return Number.isFinite(state.startedAt)&&t?.source==='stonk'&&t.migrationVerified===true&&t.creationVerified===true&&fastGraduation(t.createdAt,t.graduatedAt)&&t.graduatedAt>=state.startedAt&&t.graduatedAt<=now&&now-t.graduatedAt<=120000;}
+export function liveCEntry(t,state,now){return Number.isFinite(state.startedAt)&&t?.source==='stonk'&&t.migrationVerified===true&&t.creationVerified===true&&fastGraduation(t.createdAt,t.graduatedAt)&&t.graduatedAt>=state.startedAt&&t.graduatedAt<=now&&now-t.graduatedAt<=ENTRY_POLICY.windowMs;}
 
 export function migrateLiveExit(position) {
   if(position.strategy===LIVE_C)return;
@@ -53,7 +54,7 @@ export class LiveTrading {
     return {...state, acceptEntries:state.acceptEntries && this.env.ENABLE_LIVE_TRADING === 'true' && !!this.wallet && !this.error,
       enabled:this.env.ENABLE_LIVE_TRADING === 'true', configured:!!this.wallet && !this.error,
       wallet:this.wallet?.address ?? this.env.LIVE_WALLET_ADDRESS ?? null, error:this.error, jupiter:this.jup.status(),
-      buySol:.1, slippageBps:this.slippageBps, maxFeeLamports:this.maxFeeLamports,exitPolicy:C_EXIT_POLICY,
+      buySol:.1, slippageBps:this.slippageBps, maxFeeLamports:this.maxFeeLamports,exitPolicy:C_EXIT_POLICY,entryPolicy:ENTRY_POLICY,
       positions:this.s.all('live-position').map(display), orders:this.s.all('live-order').map(({signedTransaction, ...publicOrder}) => display(publicOrder))};
   }
   control(action) {
@@ -80,7 +81,7 @@ export class LiveTrading {
       const pending = this.s.all('live-order').filter(o => o.status === 'confirming');
       const due = positions.filter(p => !pending.some(o => o.ca === p.ca) && now - (p.checkedAt ?? 0) >= 5000).sort((a,b) => (a.checkedAt ?? 0) - (b.checkedAt ?? 0));
       const state = this.state();
-      for(const o of this.s.all('live-order').filter(o=>o.status==='retrying'))if(!collectorRunning||!state.acceptEntries||!liveCEntry(this.s.get('token',o.ca),state,now))this.s.put('live-order',o.id,{...o,status:'skipped',reason:'已暂停或毕业买入窗口超过 2 分钟'});
+      for(const o of this.s.all('live-order').filter(o=>o.status==='retrying'))if(!collectorRunning||!state.acceptEntries||!liveCEntry(this.s.get('token',o.ca),state,now))this.s.put('live-order',o.id,{...o,status:'skipped',reason:'已暂停或毕业买入窗口超过 20 秒'});
       const candidates=collectorRunning&&state.acceptEntries&&!pending.length?this.s.all('token').filter(t=>{
         if (this.s.get('live-position', t.ca)) return false;
         if(!liveCEntry(t,state,now))return false;
@@ -101,20 +102,20 @@ export class LiveTrading {
     const id = 'buy:' + t.ca + ':' + observation.at;
     const previous=this.s.get('live-order',id),attempts=(previous?.attempts??0)+1;
     const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, strategy:LIVE_C, exitPolicy:{...C_EXIT_POLICY}, quoteMint:t.quoteMint??null, quoteSymbol:t.quoteSymbol??null, side:'buy', at:this.clock(), signalAt:observation.at,
-      detectedAt:t.enrolledAt,attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
+      detectedAt:t.enrolledAt,entryPolicy:ENTRY_POLICY,attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
     this.s.put('live-order', id, intent);
     try {
       const q = await this.jup.order(SOL, t.ca, BUY_LAMPORTS, 'buy', this.wallet.address, this.slippageBps);
-      intent.buyQuoteAt=this.clock();
+      intent.buyQuoteAt=this.clock();intent.buyQuoteTiming=q.timing;
       // Probe the reverse route before signing, not a guarantee of future liquidity.
-      await this.jup.order(t.ca, SOL, q.otherAmountThreshold, 'buy', undefined, this.slippageBps);
-      intent.reverseQuoteAt=this.clock();
+      const reverse=await this.jup.order(t.ca, SOL, q.otherAmountThreshold, 'buy', undefined, this.slippageBps);
+      intent.reverseQuoteAt=this.clock();intent.reverseQuoteTiming=reverse.timing;
       const current = this.s.get('token', t.ca);
       if (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(current,this.state(),this.clock())) throw Error('签名前入场条件失效');
       await this.submit(intent, q);
     } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming'){
-      const nextAttemptAt=Math.max(this.clock()+Math.min(8000,1000*2**(attempts-1)),e.retryAt??0);
-      const retry=e.retryable===true&&attempts<6&&this.collectorRunning!==false&&this.state().acceptEntries&&nextAttemptAt<=observation.at+120000;
+      const nextAttemptAt=Math.max(this.clock()+[300,600,1000][Math.min(2,attempts-1)],e.retryAt??0);
+      const retry=e.retryable===true&&attempts<ENTRY_POLICY.maxAttempts&&this.collectorRunning!==false&&this.state().acceptEntries&&nextAttemptAt<=observation.at+ENTRY_POLICY.windowMs;
       this.s.put('live-order', id, {...intent,status:retry?'retrying':'skipped',nextAttemptAt:retry?nextAttemptAt:null,reason:e.message,diagnostic:e.diagnostic??null});
     }}
   }

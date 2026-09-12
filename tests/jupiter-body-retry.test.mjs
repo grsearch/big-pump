@@ -6,6 +6,14 @@ import {LiveTrading} from '../backend/live-trading.mjs';
 const now=1800000000000;
 const request=j=>j.order(SOL,'coin',BUY_LAMPORTS,'buy','wallet');
 const good=url=>{const p=new URL(url).searchParams;return {inputMint:p.get('inputMint'),outputMint:p.get('outputMint'),inAmount:p.get('amount'),outAmount:'1000',otherAmountThreshold:'990',swapMode:'ExactIn',slippageBps:100,signatureFeeLamports:5000,prioritizationFeeLamports:300000,rentFeeLamports:0,taker:'wallet',transaction:'mock',requestId:'mock'};};
+test('buy has a shared 3s header/body deadline, sell keeps 10s, timings are reported',async t=>{
+ const budgets=[];t.mock.method(AbortSignal,'timeout',ms=>{budgets.push(ms);return new AbortController().signal;});
+ const s=new Store(':memory:');let at=now;try{
+  const j=new Jupiter(s,{JUPITER_API_KEY:'test'},async url=>{at+=7;return {ok:true,status:200,json:async()=>{at+=9;return good(url);}};},()=>at);
+  for(const side of ['buy','sell']){const q=await j.order(SOL,'coin',BUY_LAMPORTS,side,'wallet');assert.deepEqual(q.timing,{headersMs:7,bodyMs:9,totalMs:16,timeoutMs:side==='buy'?3000:10000});}
+  assert.deepEqual(budgets,[3000,10000]);
+ }finally{s.close();}
+});
 test('body timeout, aborted stream, reset and invalid JSON are retryable and consume one reservation',async()=>{
  for(const error of [new DOMException('timeout','TimeoutError'),new DOMException('aborted','AbortError'),new TypeError('terminated'),new SyntaxError('bad JSON')]){
   const s=new Store(':memory:');try{
