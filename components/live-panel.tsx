@@ -1,6 +1,6 @@
 'use client';
 import TradeRoute from './trade-route';
-import {strategyName,strategyBucket,attributedOrder} from '../lib/live-records';
+import {strategyName,strategyBucket,attributedOrder,tradeSymbol} from '../lib/live-records';
 import {useEffect,useState} from 'react';
 import {livePositionView,livePortfolio} from '../lib/live-view';
 const sol = (n:any) => Number.isFinite(n) ? (n / 1e9).toFixed(5) + ' SOL' : '—';
@@ -14,6 +14,7 @@ export default function LivePanel({data,demo,online,busy,act}:any) {
   const [now,setNow]=useState(Date.now),[history,setHistory]=useState<'closed'|'orders'>('closed'),[page,setPage]=useState(1);
   useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),1000);return ()=>clearInterval(timer);},[]);
   const live=data?.liveTrading, positions=live?.positions??[], orders=(live?.orders??[]).map((o:any)=>attributedOrder(o,positions));
+  const symbol=(r:any)=>r.displaySymbol||tradeSymbol(r,data?.tokens??[])||'Symbol 待获取';
   const open=positions.filter((p:any)=>p.status==='open'), closed=positions.filter((p:any)=>p.status==='closed'&&(strategy==='all'||strategyBucket(p.strategy)===strategy));
   const historyOrders=orders.filter((o:any)=>strategy==='all'||strategyBucket(o.strategy)===strategy);
   const failedFees=historyOrders.filter((o:any)=>o.status==='failed'&&o.side==='buy').reduce((sum:number,o:any)=>sum+(o.receipt?.feeLamports??0),0);
@@ -43,7 +44,7 @@ export default function LivePanel({data,demo,online,busy,act}:any) {
         const v=livePositionView(p,now,online),elapsed=Number.isFinite(p.openedAt)?Math.max(0,now-p.openedAt):null;
         const selling=orders.some((o:any)=>o.ca===p.ca&&o.side==='sell'&&o.status==='confirming');
         return <tr key={p.ca}>
-          <td><a href={'https://gmgn.ai/sol/token/'+p.ca} target="_blank" rel="noreferrer">{p.symbol||p.ca.slice(0,8)} ↗</a><small>{p.ca.slice(0,6)}…{p.ca.slice(-6)}</small><small>{strategyName(p.strategy)}</small></td>
+          <td><a href={'https://gmgn.ai/sol/token/'+p.ca} target="_blank" rel="noreferrer">{symbol(p)} ↗</a><small>{p.ca.slice(0,6)}…{p.ca.slice(-6)}</small><small>{strategyName(p.strategy)}</small></td>
           <td>{elapsed===null?'—':`${Math.floor(elapsed/60000)}分${Math.floor(elapsed/1000)%60}秒`}<small>{elapsed===null?'':elapsed>=1800000?'已到最长持仓时间':`距到期 ${Math.ceil((1800000-elapsed)/60000)} 分钟`}</small></td>
           <td>{sol(v.cost)}</td>
           <td>{v.fresh?sol(v.mark):'待更新'}<small>{p.quoteAt?`报价 ${new Date(p.quoteAt).toLocaleTimeString()}`:'尚无卖出报价'}</small>{!v.fresh&&v.mark!==null&&<small>上次净回收 {sol(v.mark)}</small>}</td>
@@ -59,9 +60,9 @@ export default function LivePanel({data,demo,online,busy,act}:any) {
       <div className="toolbar"><div className="tabs"><button className={history==='closed'?'active':''} aria-pressed={history==='closed'} onClick={()=>{setHistory('closed');setPage(1);}}>已平仓 {closed.length}</button><button className={history==='orders'?'active':''} aria-pressed={history==='orders'} onClick={()=>{setHistory('orders');setPage(1);}}>订单明细 {historyOrders.length}</button></div><select aria-label="交易策略筛选" value={strategy} onChange={e=>{setStrategy(e.target.value);setPage(1);}}><option value="c">实盘 C</option><option value="a">旧实盘 A</option><option value="unknown">策略未知</option><option value="all">全部策略</option></select><span className="muted">收益按当前筛选统计 · 未成交尝试列在订单明细</span></div>
       <div className="table-scroll"><table>
       {history==='closed'?<><thead><tr><th>平仓时间 / 买入时间</th><th>策略目标币</th><th>投入</th><th>实际回收</th><th>已实现收益 / 收益率</th><th>退出原因 / 成交</th></tr></thead><tbody>{rows.map((p:any)=><tr key={p.ca}>
-        <td>{stamp(p.closedAt)}<small>买入 {stamp(p.openedAt)}</small></td><td><a href={'https://gmgn.ai/sol/token/'+p.ca} target="_blank" rel="noreferrer">{p.symbol||p.ca.slice(0,8)} ↗</a><small>{strategyName(p.strategy)}</small></td><td>{sol(p.costLamports)}</td><td>{sol(p.proceedsLamports)}</td><td className={tone(p.realizedLamports)}>{signed(p.realizedLamports)}<small>{Number.isFinite(p.realizedLamports)&&p.costLamports>0?`${(p.realizedLamports/p.costLamports*100).toFixed(2)}%`:'—'}</small></td><td className="live-reason">{p.exitReason||'—'}<small>{tx(p.sellSignature)}</small><small>{p.buySignature&&<a href={'https://solscan.io/tx/'+p.buySignature} target="_blank" rel="noreferrer">买入成交 ↗</a>}</small><TradeRoute record={p}/></td>
+        <td>{stamp(p.closedAt)}<small>买入 {stamp(p.openedAt)}</small></td><td><a href={'https://gmgn.ai/sol/token/'+p.ca} target="_blank" rel="noreferrer">{symbol(p)} ↗</a><small>{p.ca.slice(0,6)}…{p.ca.slice(-6)}</small><small>{strategyName(p.strategy)}</small></td><td>{sol(p.costLamports)}</td><td>{sol(p.proceedsLamports)}</td><td className={tone(p.realizedLamports)}>{signed(p.realizedLamports)}<small>{Number.isFinite(p.realizedLamports)&&p.costLamports>0?`${(p.realizedLamports/p.costLamports*100).toFixed(2)}%`:'—'}</small></td><td className="live-reason">{p.exitReason||'—'}<small>{tx(p.sellSignature)}</small><small>{p.buySignature&&<a href={'https://solscan.io/tx/'+p.buySignature} target="_blank" rel="noreferrer">买入成交 ↗</a>}</small><TradeRoute record={p}/></td>
       </tr>)}</tbody></>:<><thead><tr><th>最近时间</th><th>策略目标币</th><th>操作</th><th>状态</th><th>实际金额</th><th>原因 / 详情</th></tr></thead><tbody>{rows.map((o:any)=><tr key={o.id}>
-        <td>{stamp(o.confirmedAt??o.at)}</td><td><a href={'https://gmgn.ai/sol/token/'+o.ca} target="_blank" rel="noreferrer">{o.symbol||o.ca.slice(0,8)} ↗</a><small>{strategyName(o.strategy)}</small></td><td>{o.side==='buy'?'买入':'卖出'}</td><td>{labels[o.status]||o.status}</td><td>{o.receipt?.failed?sol(o.receipt.feeLamports):Number.isFinite(o.receipt?.solDelta)?sol(Math.abs(o.receipt.solDelta)):'—'}<small>{o.receipt?.failed?'链上失败手续费':o.status==='confirmed'?'链上实际金额':'尚未确认成交'}</small></td><td className="live-reason">{o.reason||'—'}{o.attempts&&<small>尝试 {o.attempts} 次{o.status==='retrying'&&o.nextAttemptAt?` · 下次 ${new Date(o.nextAttemptAt).toLocaleTimeString()}`:''}</small>}{o.signature&&<small>{tx(o.signature)}</small>}<TradeRoute record={o}/>{o.diagnostic&&<details><summary>错误详情</summary><pre>{JSON.stringify(o.diagnostic,null,2)}</pre></details>}</td>
+        <td>{stamp(o.confirmedAt??o.at)}</td><td><a href={'https://gmgn.ai/sol/token/'+o.ca} target="_blank" rel="noreferrer">{symbol(o)} ↗</a><small>{o.ca.slice(0,6)}…{o.ca.slice(-6)}</small><small>{strategyName(o.strategy)}</small></td><td>{o.side==='buy'?'买入':'卖出'}</td><td>{labels[o.status]||o.status}</td><td>{o.receipt?.failed?sol(o.receipt.feeLamports):Number.isFinite(o.receipt?.solDelta)?sol(Math.abs(o.receipt.solDelta)):'—'}<small>{o.receipt?.failed?'链上失败手续费':o.status==='confirmed'?'链上实际金额':'尚未确认成交'}</small></td><td className="live-reason">{o.reason||'—'}{o.attempts&&<small>尝试 {o.attempts} 次{o.status==='retrying'&&o.nextAttemptAt?` · 下次 ${new Date(o.nextAttemptAt).toLocaleTimeString()}`:''}</small>}{o.signature&&<small>{tx(o.signature)}</small>}<TradeRoute record={o}/>{o.diagnostic&&<details><summary>错误详情</summary><pre>{JSON.stringify(o.diagnostic,null,2)}</pre></details>}</td>
       </tr>)}</tbody></>}
       </table></div>
       {!records.length&&<div className="empty-note">{history==='closed'?'暂无已平仓记录。':'暂无订单记录。'}</div>}

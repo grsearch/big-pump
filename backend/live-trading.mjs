@@ -1,4 +1,4 @@
-import {attributedOrder,quotedRoute} from '../lib/live-records.ts';
+import {attributedOrder,quotedRoute,tradeSymbol} from '../lib/live-records.ts';
 import {Jupiter, SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
 import {LiveWallet} from './live-wallet.mjs';
 import {fastGraduation} from './stonk.mjs';
@@ -44,11 +44,14 @@ export class LiveTrading {
   onGraduation(collectorRunning){this.wakePending=collectorRunning;return this.tick(collectorRunning);}
   snapshot() {
     const state = this.state();
+    const identities=[...this.s.all('token'),...this.s.all('stonk-candidate'),...this.s.all('token-reference'),...this.s.all('history-reference')];
+    const metadata=new Map();for(const t of identities)if(!metadata.has(t.ca)&&tradeSymbol(t))metadata.set(t.ca,t);
+    const display=r=>({...r,displaySymbol:tradeSymbol(r,metadata.has(r.ca)?[metadata.get(r.ca)]:[])});
     return {...state, acceptEntries:state.acceptEntries && this.env.ENABLE_LIVE_TRADING === 'true' && !!this.wallet && !this.error,
       enabled:this.env.ENABLE_LIVE_TRADING === 'true', configured:!!this.wallet && !this.error,
       wallet:this.wallet?.address ?? this.env.LIVE_WALLET_ADDRESS ?? null, error:this.error, jupiter:this.jup.status(),
       buySol:.1, slippageBps:this.slippageBps, maxFeeLamports:this.maxFeeLamports,
-      positions:this.s.all('live-position'), orders:this.s.all('live-order').map(({signedTransaction, ...publicOrder}) => publicOrder)};
+      positions:this.s.all('live-position').map(display), orders:this.s.all('live-order').map(({signedTransaction, ...publicOrder}) => display(publicOrder))};
   }
   control(action) {
     const state = this.state();

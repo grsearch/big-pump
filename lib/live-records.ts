@@ -1,5 +1,10 @@
 export function strategyName(strategy?:string){return strategy==='stonk-graduation-c-v1'?'实盘 C':strategy==='legacy-a'?'旧实盘 A':'策略未知';}
 export function strategyBucket(strategy?:string){return strategy==='stonk-graduation-c-v1'?'c':strategy==='legacy-a'?'a':'unknown';}
+export function tradeSymbol(record:any,metadata:any[]=[]){
+ const valid=(s:any)=>typeof s==='string'&&s.trim()&&!['未知','UNKNOWN',record.ca,record.ca?.slice(0,5),record.ca?.slice(0,8)].includes(s.trim());
+ const current=metadata.find(t=>t.ca===record.ca&&valid(t.symbol));
+ return current?.symbol?.trim()??(valid(record.symbol)?record.symbol.trim():null);
+}
 // Only an exact, unique signature match can repair historical attribution.
 export function attributedOrder(order:any,positions:any[]){
  if(order.strategy||!['buy','sell'].includes(order.side))return order;

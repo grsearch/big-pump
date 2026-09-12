@@ -1,9 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {attributedOrder,quotedRoute,strategyName} from '../lib/live-records.ts';
+import {attributedOrder,quotedRoute,strategyName,tradeSymbol} from '../lib/live-records.ts';
 import {Store} from '../backend/store.mjs';
 import {LiveTrading} from '../backend/live-trading.mjs';
 const p={ca:'target',strategy:'stonk-graduation-c-v1',sellSignature:'sell-sig'};
+test('trade labels use later metadata for address placeholders and preserve unknowns',()=>{
+ const r={ca:'123456789target',symbol:'12345'};
+ assert.equal(tradeSymbol(r,[{ca:'different',symbol:'WRONG'},{ca:r.ca,symbol:'MISSILE'}]),'MISSILE');
+ assert.equal(tradeSymbol(r),null);assert.equal(tradeSymbol({...r,symbol:'KNOWN'}),'KNOWN');
+});
+test('live snapshot resolves symbols without modifying trade facts and preserves names after purge',()=>{
+ const s=new Store(':memory:');try{
+ const now=Date.now(),ca='123456789target';s.put('token',ca,{ca,symbol:'REAL',name:'Real token',status:'sleeping',graduatedAt:now-90000000,enrolledAt:now-90000000});
+ s.put('live-position',ca,{ca,symbol:'12345',status:'closed',costLamports:123});
+ const e=new LiveTrading(s,{},null);assert.equal(e.snapshot().positions[0].displaySymbol,'REAL');
+ s.purgeExpired(now);assert.equal(e.snapshot().positions[0].displaySymbol,'REAL');
+ assert.equal(s.get('live-position',ca).symbol,'12345');assert.equal(s.get('live-position',ca).costLamports,123);
+ }finally{s.close();}
+});
 test('historical strategy repair requires unique matching CA and signature',()=>{
  const order={id:'sell',ca:'target',side:'sell',signature:'sell-sig'};
  assert.equal(attributedOrder(order,[p]).strategy,p.strategy);

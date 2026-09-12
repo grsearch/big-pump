@@ -16,7 +16,7 @@ export class Store {
   const expired=this.all('token').filter(t=>!inResearchWindow(t,now)&&['sleeping','archived'].includes(t.status)&&Number.isFinite(t.graduatedAt)&&now-t.graduatedAt>=86400000);
   this.db.exec('BEGIN');try{for(const t of expired){
    // Compact trade identity preserves wallet cost-basis classification, not the observation entry.
-   this.put('token-reference',t.ca,{ca:t.ca,source:t.source??'pump',quoteMint:t.quoteMint,graduatedAt:t.graduatedAt});
+   this.put('token-reference',t.ca,{ca:t.ca,symbol:t.symbol,name:t.name,source:t.source??'pump',quoteMint:t.quoteMint,quoteSymbol:t.quoteSymbol,graduatedAt:t.graduatedAt});
    if(held.has(t.ca)){this.put('token',t.ca,{...t,hidden:true,status:'archived',reason:'已退出观察列表，等待 Shadow 清仓'});continue;}
    this.db.prepare('DELETE FROM posts WHERE ca=?').run(t.ca);
    for(const kind of ['token','ai-latest','stonk-candidate'])this.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(kind,t.ca);
