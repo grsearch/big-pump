@@ -44,7 +44,7 @@ export class Worker {
     if(!valid){missing++;this.s.put('token',t.ca,{...this.s.get('token',t.ca),marketCheckedAt:now,marketError:error});continue;}
     const account=p.info?.socials?.find(s=>s.type==='twitter')?.url?.match(/^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/)?.[1]??null;
     const fdv=p.fdv,meaningful=prev.fdv>0&&fdv/prev.fdv>=1.05,authors=heat(this.s.posts(t.ca),t.ca,now).authors;
-    const value={...this.s.get('token',t.ca),symbol:p.baseToken.symbol??prev.symbol,name:p.baseToken.name??prev.name,priceUsd:Number(p.priceUsd)>0?Number(p.priceUsd):null,fdv,lp:p.liquidity.usd,marketAt:p._at??now,marketCheckedAt:now,marketError:null,marketSource:p._source??(matchingPair(direct,t)?'DexScreener 迁移池直查':'DexScreener CA 批查'),xAccount:prev.xAccount??account,lastSignalAt:meaningful?now:prev.lastSignalAt,history:[...prev.history,{at:now,fdv,authors}].slice(-2880)};
+    const value={...this.s.get('token',t.ca),symbol:p.baseToken.symbol??prev.symbol,name:p.baseToken.name??prev.name,priceUsd:Number(p.priceUsd)>0?Number(p.priceUsd):null,fdv,lp:p.liquidity.usd,marketAt:p._at??now,marketCheckedAt:now,marketError:null,marketSource:p._source??(matchingPair(direct,t)?'DexScreener 迁移池直查':'DexScreener CA 批查'),xAccount:prev.xAccount??account,lastSignalAt:meaningful?now:prev.lastSignalAt,history:[...prev.history,{at:now,marketAt:p._at??now,priceUsd:Number(p.priceUsd)>0?Number(p.priceUsd):null,fdv,authors}].slice(-2880)};
     const next=this.transitionToken(value,this.s.rules(),now,authors);if(next.status!==prev.status)this.s.event('state',next.reason,t.ca);this.s.put('token',t.ca,next);updated++;
    }
   }
