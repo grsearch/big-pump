@@ -57,7 +57,7 @@ export class LiveTrading {
   onGraduation(collectorRunning){this.wakePending=collectorRunning;return this.tick(collectorRunning);}
   snapshot() {
     const state = this.state();
-    const identities=[...this.s.all('token'),...this.s.all('stonk-candidate'),...this.s.all('token-reference'),...this.s.all('history-reference')];
+    const identities=['token','stonk-candidate','token-reference','history-reference'].flatMap(kind=>this.s.identities(kind));
     const metadata=new Map();for(const t of identities)if(!metadata.has(t.ca)&&tradeSymbol(t))metadata.set(t.ca,t);
     const display=r=>({...r,displaySymbol:tradeSymbol(r,metadata.has(r.ca)?[metadata.get(r.ca)]:[])});
     return {...state, acceptEntries:state.acceptEntries && this.env.ENABLE_LIVE_TRADING === 'true' && !!this.wallet && !this.error,
