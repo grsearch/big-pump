@@ -62,35 +62,51 @@ export class StonkDiscovery{
   const m=row.market;if(!m||!Number.isFinite(m.fdvUsd)||!Number.isFinite(m.liquidityUsd)||!(m.priceUsd>0))return null;
   return {chainId:'solana',pairAddress:t.pool,baseToken:{address:t.ca,symbol:row.symbol,name:row.name},fdv:m.fdvUsd,liquidity:{usd:m.liquidityUsd},priceUsd:m.priceUsd,_source:'Stonk 官方 USD 行情',_at:at};
  }
- enqueue(signature,kind='unknown'){if(!this.enabled()||!signature)return;const old=this.s.get('stonk-signature',signature);if(old){if(!old.done&&kind==='migration')this.s.put('stonk-signature',signature,{...old,kind});return;}this.s.put('stonk-signature',signature,{signature,kind,at:Date.now(),tries:0});if(this.w.running)void this.drainSignatures().catch(()=>{});}
+ enqueue(signature,kind='unknown',receivedAt=Date.now()){if(!this.enabled()||!signature)return;const old=this.s.get('stonk-signature',signature);if(old){if(!old.done&&kind==='migration')this.s.put('stonk-signature',signature,{...old,kind});return;}this.s.put('stonk-signature',signature,{signature,kind,at:receivedAt,tries:0});if(this.w.running)void this.drainSignatures().catch(()=>{});}
  async drainSignatures(){
-  if(this.signatureBusy||!this.enabled()||!this.w.rpc)return;
+  if(!this.enabled()||!this.w.rpc)return;
   const now=Date.now();if(now<(this.signatureBlockedUntil??0))return;
-  this.signatureBusy=true;
-  try{
-   const eligible=this.s.all('stonk-signature').filter(x=>!x.done&&now-x.at<86400000&&now>=(x.nextAttemptAt??((x.checkedAt??0)+((x.tries??0)?30000:0))));
+  this.inFlight??=new Map();
+   const eligible=this.s.db.prepare("SELECT data FROM records WHERE kind='stonk-signature' AND coalesce(json_extract(data,'$.done'),0)=0 AND json_extract(data,'$.at')>?").all(now-86400000).map(r=>JSON.parse(r.data)).filter(x=>!this.inFlight.has(x.signature)&&now>=(x.nextAttemptAt??((x.checkedAt??0)+((x.tries??0)?30000:0))));
    const recent=eligible.filter(x=>x.kind==='migration').sort((a,b)=>b.at-a.at);
-   const background=eligible.filter(x=>x.kind!=='migration').sort((a,b)=>(a.checkedAt??0)-(b.checkedAt??0)||a.at-b.at);
-   const batch=[...recent.slice(0,3),...background.slice(0,1)];
-   if(!recent.length)batch.push(...background.slice(1,4));
+   // Warm proofs for newly created coins first; every fourth background slot
+   // services the oldest record so persistent catch-up still makes progress.
+   const oldest=((this.creationTurns??0)+1)%4===0;
+   const background=eligible.filter(x=>x.kind!=='migration').sort((a,b)=>oldest?a.at-b.at:b.at-a.at);
+   const active=[...this.inFlight.values()];
+   const batch=[...recent.slice(0,Math.max(0,3-active.filter(x=>x==='migration').length)),...background.slice(0,Math.max(0,1-active.filter(x=>x!=='migration').length))];
+   if(batch.some(x=>x.kind!=='migration'))this.creationTurns=(this.creationTurns??0)+1;
+   for(const sig of batch)this.inFlight.set(sig.signature,sig.kind);
    await Promise.all(batch.map(async sig=>{
+    try{
     let done=false,error=null;try{done=await this.confirm(sig.signature);}catch(e){error='链上核验请求失败';if(e.retryAfter)this.signatureBlockedUntil=Date.now()+Math.max(1000,e.retryAfter*1000);}
     const tries=(sig.tries??0)+1,at=Date.now();
     this.s.put('stonk-signature',sig.signature,{...this.s.get('stonk-signature',sig.signature),done,tries,checkedAt:at,nextAttemptAt:done?null:at+Math.min(60000,1000*2**Math.min(tries-1,6)),lastError:done?null:error??'等待交易或创建证明'});
+    }finally{this.inFlight.delete(sig.signature);}
    }));
-  }finally{this.signatureBusy=false;}
  }
  async confirm(signature){
-  const tx=await this.w.rpc('getTransaction',[signature,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);if(!tx)return false;
+  // Per-call timing, not a shared RPC wrapper: concurrent verifications must not
+  // overwrite each other's evidence. Counts distinguish cache hits from scans.
+  const queued=this.s.get('stonk-signature',signature),startedAt=Date.now();
+  const timing={receivedAt:queued?.at??null,attempt:(queued?.tries??0)+1,verifyStartedAt:startedAt,queueMs:queued?startedAt-queued.at:null,rpc:[]};
+  const rpc=async(method,args)=>{const start=performance.now();try{return await this.w.rpc(method,args);}finally{timing.rpc.push({method,elapsedMs:Math.round(performance.now()-start)});}};
+  try{return await this.verify(signature,rpc,timing);}finally{
+   const row=this.s.get('stonk-signature',signature);if(row)this.s.put('stonk-signature',signature,{...row,diagnostic:{...timing,verifyFinishedAt:Date.now()}});
+  }
+ }
+ async verify(signature,rpc,timing){
+  const tx=await rpc('getTransaction',[signature,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);if(!tx)return false;
   const creation=decodeStonkCreation(tx);if(creation)this.s.put('stonk-creation',creation.ca,{...creation,signature});
-  const found=decodeStonkMigration(tx);if(!found||this.s.get('token',found.ca)||this.s.get('stonk-exclusion',found.ca))return true;
+  const found=decodeStonkMigration(tx);if(!found||this.s.has('token',found.ca)||this.s.get('stonk-exclusion',found.ca))return true;
   this.s.put('stonk-verified-migration',found.ca,{...found,signature});
   if(!this.s.get('stonk-candidate',found.ca))this.s.put('stonk-candidate',found.ca,{ca:found.ca,pool:found.curvePool,quoteMint:found.quoteMint,reportedGraduatedAt:found.graduatedAt,creationCheck:'等待链上创建时间'});
   let c=this.s.get('stonk-creation',found.ca);
+  timing.creationCacheHit=!!c&&c.curvePool===found.curvePool&&c.quoteMint===found.quoteMint&&c.platformConfig===found.platformConfig;
   if(!c||c.curvePool!==found.curvePool||c.quoteMint!==found.quoteMint||c.platformConfig!==found.platformConfig){
-   const r=await this.w.rpc('getTransactionsForAddress',[found.curvePool,{transactionDetails:'signatures',sortOrder:'asc',limit:10,commitment:'confirmed',filters:{status:'succeeded'}}]);
+   const r=await rpc('getTransactionsForAddress',[found.curvePool,{transactionDetails:'signatures',sortOrder:'asc',limit:10,commitment:'confirmed',filters:{status:'succeeded'}}]);
    if(!Array.isArray(r?.data))throw Error('链上创建时间查询失败');
-   c=null;for(const x of r.data){const init=await this.w.rpc('getTransaction',[x.signature,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);if(!init)throw Error('创建交易暂不可用');const decoded=decodeStonkCreation(init);if(decoded?.ca===found.ca&&decoded.curvePool===found.curvePool&&decoded.quoteMint===found.quoteMint&&decoded.platformConfig===found.platformConfig){c={...decoded,signature:x.signature};this.s.put('stonk-creation',found.ca,c);break;}}
+   c=null;for(const x of r.data){const init=await rpc('getTransaction',[x.signature,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);if(!init)throw Error('创建交易暂不可用');const decoded=decodeStonkCreation(init);if(decoded?.ca===found.ca&&decoded.curvePool===found.curvePool&&decoded.quoteMint===found.quoteMint&&decoded.platformConfig===found.platformConfig){c={...decoded,signature:x.signature};this.s.put('stonk-creation',found.ca,c);break;}}
   }
   if(!c){this.s.event('filter','暂未入监控：迁移已验证，链上创建时间待核验',found.ca);return false;}
   const createdAt=c.createdAt;
@@ -98,21 +114,23 @@ export class StonkDiscovery{
    this.s.put('stonk-exclusion',found.ca,{ca:found.ca,createdAt,graduatedAt:found.graduatedAt,reason:'创建至毕业超过 20 分钟，或时间无效'});
    this.s.event('filter','未入监控：创建至毕业超过 20 分钟，或时间无效',found.ca);return true;
   }
-  await this.enroll({...found,createdAt,creationVerified:true,creationSignature:c.signature,creator:c.creator,creatorVerified:c.creatorVerified,creationTimeSource:'链上 LaunchLab 初始化'},signature);return true;
+  const verifiedAt=Date.now();
+  await this.enroll({...found,createdAt,creationVerified:true,creationSignature:c.signature,creator:c.creator,creatorVerified:c.creatorVerified,creationTimeSource:'链上 LaunchLab 初始化',discoveryTiming:{...timing,verifiedAt,totalMs:verifiedAt-found.graduatedAt,eventDelayMs:timing.receivedAt===null?null:timing.receivedAt-found.graduatedAt,verificationMs:verifiedAt-timing.verifyStartedAt}},signature);return true;
  }
  async enroll(found,signature){
-  if(found.source!=='stonk'||!found.migrationVerified||!found.creationVerified||!fastGraduation(found.createdAt,found.graduatedAt)||this.s.get('token',found.ca))return;
+  if(found.source!=='stonk'||!found.migrationVerified||!found.creationVerified||!fastGraduation(found.createdAt,found.graduatedAt)||this.s.has('token',found.ca))return;
   // Durable, minimal outbox first. No observation record or metadata is required
   // by the signer. A lost IPC notification is recovered by its one-second tick.
   let signal=this.s.get('live-signal',found.ca);
   if(!signal){signal={...found,migrationSignature:signature,verifiedAt:Date.now(),observationPending:true};this.s.put('live-signal',found.ca,signal);}
   this.w.onGraduation?.();
+  if(this.w.discoveryOnly)return;
   await yieldTurn();
   this.materializeObservation(signal);
  }
  materializeObservation(signal){
   if(!signal.observationPending)return;
-  if(!this.s.get('token',signal.ca)&&Date.now()-signal.graduatedAt<86400000){
+  if(!this.s.has('token',signal.ca)&&Date.now()-signal.graduatedAt<86400000){
    const c=this.s.get('stonk-candidate',signal.ca);
    const {observationPending,...found}=signal;
    this.s.put('token',signal.ca,{...newToken(signal.ca,signal.pool,signal.graduatedAt,Date.now()),...found,...(c?this.metadata(c,signal):{}),smartCoverage:'按实际余额变化统计；缺少历史汇率的样本不验证',shadowBlocked:'等待链上税费与计价资产行情'});
@@ -121,14 +139,18 @@ export class StonkDiscovery{
   this.s.put('live-signal',signal.ca,{...signal,observationPending:false,observedAt:Date.now()});
  }
  recoverObservation(){const row=this.s.db.prepare("SELECT data FROM records WHERE kind='live-signal' AND json_extract(data,'$.observationPending')=1 LIMIT 1").get();if(row)this.materializeObservation(JSON.parse(row.data));}
+ refreshObservationMetadata(){
+  const rows=this.s.db.prepare("SELECT c.data FROM records c JOIN records t ON t.kind='token' AND t.id=c.id WHERE c.kind='stonk-candidate' AND json_extract(c.data,'$.seenAt')>coalesce(json_extract(t.data,'$.metadataCandidateAt'),0) LIMIT 4").all();
+  for(const row of rows){const c=JSON.parse(row.data),t=this.s.get('token',c.ca);if(t)this.s.put('token',c.ca,{...t,...this.metadata(c,t),metadataCandidateAt:c.seenAt});}
+ }
  metadata(c,t){return enrichMetadata(c,t); }
- async pollPage(page){const j=await jsonFetch('https://www.stonkfun.xyz/api/public/v1/tokens?status=graduated&sort=newest&pageSize=100&page='+page);if(!Array.isArray(j.data?.tokens))throw Error('Stonk 响应格式无效');for(const row of j.data.tokens){const c=stonkCandidate(row);if(!c)continue;const old=this.s.get('stonk-candidate',c.ca);if(!old&&!fastGraduation(c.createdAt,c.reportedGraduatedAt))this.s.event('filter','官方创建时间异常或超时，保留候选等待链上复核',c.ca);this.s.put('stonk-candidate',c.ca,{...old,...c,seenAt:Date.now()});const t=this.s.get('token',c.ca);if(t?.source==='stonk'){this.s.put('token',c.ca,{...t,...this.metadata(c,t)});}}
+ async pollPage(page){const j=await jsonFetch('https://www.stonkfun.xyz/api/public/v1/tokens?status=graduated&sort=newest&pageSize=100&page='+page);if(!Array.isArray(j.data?.tokens))throw Error('Stonk 响应格式无效');for(const row of j.data.tokens){const c=stonkCandidate(row);if(!c)continue;const old=this.s.get('stonk-candidate',c.ca);if(!old&&!fastGraduation(c.createdAt,c.reportedGraduatedAt))this.s.event('filter','官方创建时间异常或超时，保留候选等待链上复核',c.ca);this.s.put('stonk-candidate',c.ca,{...old,...c,seenAt:Date.now()});const t=this.w.discoveryOnly?null:this.s.get('token',c.ca);if(!this.w.discoveryOnly&&t?.source==='stonk'){this.s.put('token',c.ca,{...t,...this.metadata(c,t)});}}
  return Math.max(1,Number(j.data?.pagination?.totalPages)||1);}
- async tick(){if(this.busy)return;this.busy=true;try{await yieldTurn();try{this.recoverObservation();this.observationError=null;}catch{this.observationError='观察记录待重试';}await this.run();}finally{this.busy=false;}}
+ async tick(){if(this.busy)return;this.busy=true;try{await yieldTurn();try{if(!this.w.discoveryOnly)this.recoverObservation();this.observationError=null;}catch{this.observationError='观察记录待重试';}await this.run();}finally{this.busy=false;}}
  async run(){if(!this.enabled()){this.status='未开启';return;}if(!this.w.rpc){this.status='需要 Helius 核验迁移';return;}const now=Date.now();
   if(now>=this.nextPoll){this.nextPoll=now+60000;try{const pages=await this.pollPage(1);const cursor=this.s.get('config','stonk-pages')?.page??2;if(pages>1)await this.pollPage(Math.min(cursor,pages));this.s.put('config','stonk-pages',{page:cursor>=pages?2:cursor+1});this.status='已连接 · 毕业候选等待链上核验';}catch(e){this.nextPoll=now+Math.max(60000,(e.retryAfter??60)*1000);this.status='Stonk 列表请求失败，稍后重试';}}
   if(now<this.nextVerify)return;this.nextVerify=now+5000;
-  const c=this.s.all('stonk-candidate').filter(x=>!this.s.get('token',x.ca)&&!this.s.get('stonk-exclusion',x.ca)&&now-x.reportedGraduatedAt<86400000&&now-(x.checkedAt??0)>(x.pending?.length?5000:60000)&&(!x.exhaustedAt||now-x.exhaustedAt>300000)).sort((a,b)=>(a.checkedAt??0)-(b.checkedAt??0))[0];if(!c)return;
+  const c=this.s.all('stonk-candidate').filter(x=>!this.s.has('token',x.ca)&&!this.s.get('stonk-exclusion',x.ca)&&now-x.reportedGraduatedAt<86400000&&now-(x.checkedAt??0)>(x.pending?.length?5000:60000)&&(!x.exhaustedAt||now-x.exhaustedAt>300000)).sort((a,b)=>(a.checkedAt??0)-(b.checkedAt??0))[0];if(!c)return;
   // Bounded historical verification, persisted pagination: no inferred graduation timestamp.
   try{
    const known=this.s.get('stonk-verified-migration',c.ca);if(known){await this.confirm(known.signature);this.s.put('stonk-candidate',c.ca,{...this.s.get('stonk-candidate',c.ca),checkedAt:now});return;}
@@ -138,7 +160,7 @@ export class StonkDiscovery{
     const end=sigs.length<100||sigs.at(-1)?.blockTime*1000<c.reportedGraduatedAt-300000;
     state={...state,pending,nextBefore:end?null:sigs.at(-1)?.signature,pageEnd:end};this.s.put('stonk-candidate',c.ca,state);
    }
-   for(const signature of state.pending.slice(0,3)){if(!await this.confirm(signature))break;state={...state,pending:state.pending.slice(1)};this.s.put('stonk-candidate',c.ca,state);if(this.s.get('token',c.ca)||this.s.get('stonk-exclusion',c.ca))break;}
+   for(const signature of state.pending.slice(0,3)){if(!await this.confirm(signature))break;state={...state,pending:state.pending.slice(1)};this.s.put('stonk-candidate',c.ca,state);if(this.s.has('token',c.ca)||this.s.get('stonk-exclusion',c.ca))break;}
    this.s.put('stonk-candidate',c.ca,{...state,checkedAt:now,...(!state.pending.length?{before:state.nextBefore,exhaustedAt:state.pageEnd?now:null}:{})});
   }catch{this.s.put('stonk-candidate',c.ca,{...this.s.get('stonk-candidate',c.ca),checkedAt:now});this.status='迁移或创建时间核验暂不可用，将重试';}
  }

@@ -22,7 +22,7 @@ export class Dashboard {
   }
   const wallets=s.summaries('wallet'),coverage=s.summaries('coverage');
   const stonkPending=s.db.prepare("SELECT count(*) AS n FROM records c WHERE c.kind='stonk-candidate' AND json_extract(c.data,'$.reportedGraduatedAt')>? AND NOT EXISTS(SELECT 1 FROM records t WHERE t.kind='token' AND t.id=c.id)").get(now-86400000).n;
-  return {mode:'live',now,running:w.running,status:w.status,rules:s.rules(),dayCost:s.cost(),tokens,wallets,
+  return {mode:'live',now,running:w.running,status:w.status,discoveryProcess:w.discoveryStatus??null,rules:s.rules(),dayCost:s.cost(),tokens,wallets,
    stonkHistory:w.history.snapshot(),events:s.recentEvents(),stonkEnabled:w.stonk.enabled(),stonkPending,
    xEnabled:this.env.ENABLE_X==='true',xBlocked:!!s.get('config','x-block'),researchEnabled:this.env.ENABLE_WALLET_RESEARCH==='true',
    analysisStatus:w.analysis.status(),assessments:s.all('ai-latest'),liveTrading:this.live.snapshot(),

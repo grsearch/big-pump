@@ -5,12 +5,16 @@ import { Worker } from './worker.mjs';
 import {removePumpObservations} from './stonk-only.mjs';
 import {LiveProcess} from './live-process.mjs';
 import {Dashboard} from './dashboard.mjs';
+import {DiscoveryProcess} from './discovery-process.mjs';
 import { validateRules } from '../lib/engine.ts';
 const bootAt=Date.now();console.log('Collector initializing: database and wallet verification');
 const store=new Store(resolve(process.env.DATA_DIR??'data','pump.db'));removePumpObservations(store);for(const run of store.all('shadow-run'))if(run.status==='running'){store.put('shadow-run',run.id,{...run,status:'retired',acceptEntries:false,retiredAt:Date.now()});}store.put('config','shadow-active',null);const worker=new Worker(store,{...process.env,MONITOR_SOURCE:'stonk'});const port=Number(process.env.PORT??5010);
 const live=new LiveProcess(store,process.env,resolve(process.env.DATA_DIR??'data','pump.db'));
 worker.onGraduation=()=>live.notify(worker.running);
 const dashboard=new Dashboard(store,worker,live,process.env);
+worker.externalDiscovery=process.env.ENABLE_STONK==='true';
+const discovery=new DiscoveryProcess(process.env,resolve(process.env.DATA_DIR??'data','pump.db'),status=>{worker.discoveryStatus={isolated:true,...status};worker.status.helius=status.helius??status.error;worker.status.stonk=status.stonk??status.error;},()=>{live.notify(worker.running);});
+worker.onDiscoveryControl=running=>{live.notify(running);discovery.notify(running);};
 
 
 const origins=new Set(['http://localhost:3000','http://127.0.0.1:3000',`http://localhost:${port}`,`http://127.0.0.1:${port}`]);
@@ -32,6 +36,6 @@ export const server=createServer(async(req,res)=>{const origin=req.headers.origi
  else if(path==='/api/wallet/scan'){result=await worker.scanWallet(data.address);}
  else{res.writeHead(404);res.end('{}');return;}dashboard.invalidate();res.end(JSON.stringify(result));
  }catch(e){res.writeHead(400);res.end(JSON.stringify({error:e.message}));}});
-const cleanup=setInterval(()=>{try{removePumpObservations(store);store.purgeExpired();}catch{}},60000);cleanup.unref();server.on('close',()=>{clearInterval(cleanup);live.dispose();});
-server.listen(port,'127.0.0.1',()=>{console.log(`Pump collector: http://127.0.0.1:${port}`);console.log('API secrets are loaded only from the local environment.');console.log('Collector initialization completed in '+(Date.now()-bootAt)+' ms');live.start();if(process.env.AUTO_START==='true')worker.start().then(()=>live.notify(worker.running)).catch(()=>{});});
-for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{live.dispose();worker.stop();server.close();store.close();process.exit(0);});
+const cleanup=setInterval(()=>{try{removePumpObservations(store);store.purgeExpired();}catch{}},60000);cleanup.unref();server.on('close',()=>{clearInterval(cleanup);discovery.dispose();live.dispose();});
+server.listen(port,'127.0.0.1',()=>{console.log(`Pump collector: http://127.0.0.1:${port}`);console.log('API secrets are loaded only from the local environment.');console.log('Collector initialization completed in '+(Date.now()-bootAt)+' ms');live.start();discovery.start();if(process.env.AUTO_START==='true')worker.start().then(()=>live.notify(worker.running)).catch(()=>{});});
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{discovery.dispose();live.dispose();worker.stop();server.close();store.close();process.exit(0);});

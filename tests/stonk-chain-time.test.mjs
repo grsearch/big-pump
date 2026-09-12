@@ -10,7 +10,7 @@ test('migration queue bypasses creation backlog, reserves background progress an
  try{
   for(let i=0;i<100;i++)w.stonk.enqueue('old'+i,'creation');
   w.stonk.enqueue('new','migration');w.stonk.confirm=async sig=>{seen.push(sig);return sig!=='new';};
-  await w.stonk.drainSignatures();assert.equal(seen[0],'new');assert.equal(seen.length,2);assert.equal(s.get('stonk-signature','old0').done,true);
+  await w.stonk.drainSignatures();assert.equal(seen[0],'new');assert.equal(seen.length,2);assert(seen[1].startsWith('old'));assert.equal(s.get('stonk-signature',seen[1]).done,true);
   const retry=s.get('stonk-signature','new');assert.equal(retry.done,false);assert(retry.nextAttemptAt>Date.now());
   s.put('stonk-signature','new',{...retry,tries:8,nextAttemptAt:0});await w.stonk.drainSignatures();assert.equal(s.get('stonk-signature','new').tries,9);
  }finally{s.close();}

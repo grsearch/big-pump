@@ -13,6 +13,13 @@ function row(){return {mint:ca,pool,name:'Example',symbol:'EX',status:'graduated
 function initFixture(at=now-120000){const tx=fixture(),keys=tx.transaction.message.accountKeys;keys[5]=keys[17];keys[6]=ca;keys[7]=quote;tx.blockTime=Math.floor(at/1000);tx.transaction.message.instructions[0].data=base58(createHash('sha256').update('global:initialize_with_token_2022').digest().subarray(0,8));return tx;}
 const rpcFixture=async(method,args)=>method==='getTransactionsForAddress'?{data:[{signature:'init'}]}:args[0]==='init'?initFixture():fixture();
 
+test('cached creation proof needs only migration RPC and records discovery timing independently of observation',async()=>{
+ const s=new Store(':memory:'),w=new Worker(s,{ENABLE_STONK:'true'}),calls=[];w.discoveryOnly=true;
+ const proof=decodeStonkCreation(initFixture());s.put('stonk-creation',ca,{...proof,signature:'init'});
+ w.rpc=async method=>{calls.push(method);return fixture();};
+ try{w.stonk.enqueue('timed','migration');assert(await w.stonk.confirm('timed'));const signal=s.get('live-signal',ca);assert.equal(signal.discoveryTiming.creationCacheHit,true);assert.deepEqual(calls,['getTransaction']);assert.equal(signal.discoveryTiming.rpc.length,1);assert(signal.discoveryTiming.queueMs>=0);assert(signal.discoveryTiming.totalMs>=0);assert.equal(s.get('token',ca),null);}finally{s.close();}
+});
+
 test('20 minute graduation gate is inclusive and fails closed for missing or reversed times',()=>{
  assert(fastGraduation(now-1200000,now));assert(!fastGraduation(now-1200001,now));
  for(const created of [undefined,null,NaN,0,now+1])assert(!fastGraduation(created,now));
