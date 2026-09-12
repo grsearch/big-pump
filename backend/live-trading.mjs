@@ -174,12 +174,12 @@ export class LiveTrading {
         this.s.put('live-order', order.id, {...publicOrder, status:receipt.failed ? 'failed' : 'confirmed', reconcileError:null,reconcileRequired:false,...(publicOrder.reconcileRequired?{reason:receipt.failed?'链上交易失败':'链上与账务核对完成'}:{}), receipt, confirmedAt:this.clock()});
         if (!receipt.failed) {
           if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, strategy:order.strategy??null, exitPolicy:order.exitPolicy??null, quoteMint:order.quoteMint??null, quoteSymbol:order.quoteSymbol??null, buyRoute:order.route??null, status:'open', quantity:receipt.quantity,
-            costLamports:-receipt.solDelta, openedAt:receipt.at, buySignature:order.signature, highLamports:0, trailingActive:false});
+            costLamports:-receipt.solDelta, buyCashbackLamports:receipt.cashbackLamports??0, openedAt:receipt.at, buySignature:order.signature, highLamports:0, trailingActive:false});
           else {
             const p = this.s.get('live-position', order.ca);
             if (!p || receipt.quantity !== p.quantity) throw Error('卖出回执数量不一致');
             this.s.put('live-position', order.ca, {...p, status:'closed', closedAt:receipt.at, proceedsLamports:receipt.solDelta,
-              realizedLamports:receipt.solDelta-p.costLamports, sellSignature:order.signature, sellRoute:order.route??null, exitReason:order.exitReason});
+              realizedLamports:receipt.solDelta-p.costLamports, sellCashbackLamports:receipt.cashbackLamports??0, sellSignature:order.signature, sellRoute:order.route??null, exitReason:order.exitReason});
           }
         } else if (order.side === 'sell') {
           const p = this.s.get('live-position', order.ca);
