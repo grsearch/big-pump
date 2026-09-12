@@ -6,7 +6,9 @@
 
 ## 服务器所有者配置
 
-申请 Jupiter Free API Key，在服务器 `.env` 填写 `JUPITER_API_KEY`。免费套餐按每组织 60 次/分钟的滑动窗口配置；同组织其他程序会共享额度。如果升级套餐，手动调整 `JUPITER_REQUESTS_PER_MINUTE`，不要只改数字而未升级。
+本部署已订阅 Jupiter Developer Plan，使用原 `JUPITER_API_KEY`。默认 10 次/秒，并以 600 次/分钟作为本程序滚动保护上限；其他程序共享账户额度。每秒为卖出保留 2 个请求位置。付费提升额度，不保证单次 HTTP 请求或链上成交更快。官方：https://developers.jup.ag/docs/portal/plans
+
+旧 `.env` 只有 `JUPITER_REQUESTS_PER_MINUTE=60` 且未设置每秒额度时，自动迁移为 600，避免仍卡在免费额度。建议服务器显式设置 `JUPITER_REQUESTS_PER_SECOND=10` 和 `JUPITER_REQUESTS_PER_MINUTE=600`。如需为其他程序留额度，两个值一起调低。429 按 Retry-After 退避，无有效提示时至少 1 秒，不再强制暂停 60 秒。
 
 准备专用 Solana 钱包。将 Solana CLI 格式的 64 字节密钥数组 JSON 放在仓库之外，仅服务账户可读；在 `.env` 中填写 `LIVE_WALLET_KEYPAIR_FILE` 的绝对路径和匹配的 `LIVE_WALLET_ADDRESS`。不要在聊天、网页或 Git 中提交私钥。现有 `HELIUS_API_KEY` 用于模拟及链上确认。
 
@@ -15,7 +17,8 @@
 | 配置 | 默认值 | 含义 |
 | --- | --- | --- |
 | ENABLE_LIVE_TRADING | false | 所有者改为 true 后，后端才加载签名钱包 |
-| JUPITER_REQUESTS_PER_MINUTE | 60 | 此程序可使用的共享报价额度 |
+| JUPITER_REQUESTS_PER_SECOND | 10 | Developer 每秒限额 |
+| JUPITER_REQUESTS_PER_MINUTE | 600 | 此程序可使用的共享报价额度 |
 | LIVE_SLIPPAGE_BPS | 1500 | 买卖滑点上限 15%，失败不会自动提高 |
 | LIVE_PRIORITY_FEE_LAMPORTS | 300000 | 买卖固定优先费 0.0003 SOL；基础费和租金另计 |
 | LIVE_MAX_FEE_LAMPORTS | 5000000 | 单笔网络/优先费/租金总上限 0.005 SOL，不含买入本金 |

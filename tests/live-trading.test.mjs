@@ -68,13 +68,24 @@ test('routine exits alternate with new entries but triggered exits take priority
  assert.equal(f.submitted(),urgent?0:1);if(!urgent)await f.engine.tick(true);assert.equal(checks,1);f.s.close();
  }
 });
-test('free tier persists sliding reservations and reserves 12 slots for exits',()=>{
-  const s=new Store(':memory:');let at=now;
-  let j=new Jupiter(s,{JUPITER_API_KEY:'test'},null,()=>at);
-  for(let i=0;i<48;i++)j.reserve('buy');assert.throws(()=>j.reserve('buy'),/卖出优先/);
-  j=new Jupiter(s,{JUPITER_API_KEY:'test'},null,()=>at);
-  for(let i=0;i<12;i++)j.reserve('sell');assert.throws(()=>j.reserve('sell'));
-  at+=60000;assert.equal(j.status().used,0);j.reserve('buy');s.close();
+test('Developer persists per-second reservations and leaves two slots for exits',()=>{
+ const s=new Store(':memory:');let at=now;let j=new Jupiter(s,{},null,()=>at);
+ try{assert.equal(j.status().plan,'Developer');assert.equal(j.limit,600);assert.equal(j.rps,10);
+ for(let i=0;i<8;i++)j.reserve('buy');assert.throws(()=>j.reserve('buy'),e=>e.retryAt===now+1000);
+ j=new Jupiter(s,{},null,()=>at);j.reserve('sell');j.reserve('sell');assert.throws(()=>j.reserve('sell'));
+ at+=1000;j.reserve('buy');assert.equal(j.status().usedThisSecond,1);
+ }finally{s.close();}
+});
+test('legacy Free env upgrades once by interpretation while explicit shared allocation is respected',()=>{
+ const s=new Store(':memory:');try{const j=new Jupiter(s,{JUPITER_REQUESTS_PER_MINUTE:'60'});assert.equal(j.limit,600);assert(j.status().migratedLegacyLimit);
+ const custom=new Jupiter(s,{JUPITER_REQUESTS_PER_MINUTE:'60',JUPITER_REQUESTS_PER_SECOND:'2'});assert.equal(custom.limit,60);assert.equal(custom.rps,2);assert(!custom.status().migratedLegacyLimit);assert.throws(()=>new Jupiter(s,{JUPITER_REQUESTS_PER_SECOND:'11'}));}finally{s.close();}
+});
+test('Developer minute guard survives restart and blocked retry does not add an extra minute',()=>{
+ const s=new Store(':memory:');try{s.put('config','jupiter-rate',{calls:Array.from({length:588},(_,i)=>now-59000+i*95)});const j=new Jupiter(s,{},null,()=>now);assert.throws(()=>j.reserve('buy'),e=>e.retryAt===now+1000);j.reserve('sell');
+ s.put('config','jupiter-rate',{calls:[now],blockedUntil:now+2000});assert.throws(()=>j.reserve('sell'),e=>e.retryAt===now+2000);}finally{s.close();}
+});
+test('short server Retry-After is honored for Developer instead of forced 60s sleep',async()=>{
+ const s=new Store(':memory:');try{const j=new Jupiter(s,{JUPITER_API_KEY:'test'},async()=>new Response('',{status:429,headers:{'retry-after':'2'}}),()=>now);await assert.rejects(j.order(SOL,'coin',BUY_LAMPORTS,'buy'));assert.equal(j.status().blockedUntil,now+2000);}finally{s.close();}
 });
 test('429 blocks all quotes and consumes reservation; never exposes response secrets',async()=>{
   const s=new Store(':memory:');let calls=0;

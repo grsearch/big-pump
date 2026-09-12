@@ -7,21 +7,30 @@ const retryError=(message,retryAt=0)=>Object.assign(new Error(message),{retryabl
 export class Jupiter {
   constructor(store, env = process.env, fetcher = fetch, clock = Date.now) {
     this.s = store; this.env = env; this.fetch = fetcher; this.clock = clock;
-    this.limit = Number(env.JUPITER_REQUESTS_PER_MINUTE ?? 60);
+    // This deployment uses Developer (10 RPS). Upgrade the old Free .env value
+    // unless an explicit per-second override requests a custom lower allocation.
+    this.migratedLegacyLimit = Number(env.JUPITER_REQUESTS_PER_MINUTE) === 60 && env.JUPITER_REQUESTS_PER_SECOND === undefined;
+    this.limit = this.migratedLegacyLimit ? 600 : Number(env.JUPITER_REQUESTS_PER_MINUTE ?? 600);
+    this.rps = Number(env.JUPITER_REQUESTS_PER_SECOND ?? 10);
     this.priorityFeeLamports = Number(env.LIVE_PRIORITY_FEE_LAMPORTS ?? 300000);
     if(!Number.isSafeInteger(this.priorityFeeLamports)||this.priorityFeeLamports<0)throw Error('优先费配置无效');
     if (!Number.isInteger(this.limit) || this.limit < 12 || this.limit > 9000) throw Error('Jupiter 请求额度无效');
+    if (!Number.isInteger(this.rps) || this.rps < 1 || this.rps > 10) throw Error('Developer 每秒请求额度必须为 1–10');
   }
   status() {
     const now = this.clock(), saved = this.s.get('config', 'jupiter-rate') ?? {};
-    return {configured: !!this.env.JUPITER_API_KEY, limit: this.limit, priorityFeeLamports:this.priorityFeeLamports,
+    return {configured: !!this.env.JUPITER_API_KEY, plan:'Developer', requestsPerSecond:this.rps, migratedLegacyLimit:this.migratedLegacyLimit, limit: this.limit, priorityFeeLamports:this.priorityFeeLamports,
+      usedThisSecond:(saved.calls??[]).filter(at=>now-at<1000).length,
       used: (saved.calls ?? []).filter(at => now - at < 60000).length,
       blockedUntil: saved.blockedUntil ?? 0};
   }
   reserve(side) {
     const now = this.clock(), saved = this.s.get('config', 'jupiter-rate') ?? {};
     const calls = (saved.calls ?? []).filter(at => now - at < 60000);
-    if (now < (saved.blockedUntil ?? 0) || calls.length >= this.limit - (side === 'buy' ? 12 : 0)) throw retryError('Jupiter 额度等待：卖出优先',Math.max(saved.blockedUntil??0,(calls[0]??now)+60000));
+    if (now < (saved.blockedUntil ?? 0)) throw retryError('Jupiter 额度等待：卖出优先',saved.blockedUntil);
+    if (calls.length >= this.limit - (side === 'buy' ? 12 : 0)) throw retryError('Jupiter 额度等待：卖出优先',(calls[0]??now)+60000);
+    const recent=calls.filter(at=>now-at<1000),reserved=side==='buy'?Math.min(2,this.rps-1):0;
+    if(recent.length>=this.rps-reserved)throw retryError('Jupiter 每秒额度等待：卖出优先',recent[0]+1000);
     this.s.put('config', 'jupiter-rate', {...saved, calls: [...calls, now]});
   }
   async order(inputMint, outputMint, amount, side, taker, slippageBps = 1500) {
@@ -38,8 +47,8 @@ export class Jupiter {
       headers: {'x-api-key': this.env.JUPITER_API_KEY}, signal: AbortSignal.timeout(10000)});
     } catch {throw retryError('Jupiter 报价网络失败');}
     if (response.status === 429) {
-      const seconds = Number(response.headers.get('retry-after'));
-      const wait = Number.isFinite(seconds) && seconds > 0 ? Math.max(60, seconds) : 60;
+      const raw=response.headers.get('retry-after'),seconds=Number(raw);
+      const wait = raw&&Number.isFinite(seconds)&&seconds>0?Math.max(1,seconds):raw&&Number.isFinite(Date.parse(raw))?Math.max(1,(Date.parse(raw)-this.clock())/1000):1;
       this.s.put('config', 'jupiter-rate', {...this.s.get('config', 'jupiter-rate'), blockedUntil: this.clock() + wait * 1000});
     }
     if (!response.ok) {if(response.status===429||response.status>=500)throw retryError('Jupiter 报价 HTTP '+response.status,this.status().blockedUntil);throw Error('Jupiter 报价 HTTP ' + response.status);}
