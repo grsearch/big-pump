@@ -2,6 +2,10 @@ export const SOL = 'So11111111111111111111111111111111111111112';
 export const BUY_LAMPORTS = '100000000';
 const integer = value => typeof value === 'string' && /^[0-9]+$/.test(value);
 const retryError=(message,retryAt=0)=>Object.assign(new Error(message),{retryable:true,retryAt});
+const quoteReadError=(error,phase)=>Object.assign(retryError(
+  phase==='headers'?'Jupiter 报价网络失败':'Jupiter 报价响应体读取失败，等待重试'),{
+  diagnostic:{phase,kind:['TimeoutError','AbortError'].includes(error?.name)?'timeout':error?.name==='SyntaxError'?'invalid-json':'network'}
+});
 
 // Persist reservations before dispatch: a timeout still consumed an API request.
 export class Jupiter {
@@ -45,14 +49,18 @@ export class Jupiter {
     let response;
     try {response = await this.fetch('https://api.jup.ag/swap/v2/order?' + params, {
       headers: {'x-api-key': this.env.JUPITER_API_KEY}, signal: AbortSignal.timeout(10000)});
-    } catch {throw retryError('Jupiter 报价网络失败');}
+    } catch (error) {throw quoteReadError(error,'headers');}
     if (response.status === 429) {
       const raw=response.headers.get('retry-after'),seconds=Number(raw);
       const wait = raw&&Number.isFinite(seconds)&&seconds>0?Math.max(1,seconds):raw&&Number.isFinite(Date.parse(raw))?Math.max(1,(Date.parse(raw)-this.clock())/1000):1;
       this.s.put('config', 'jupiter-rate', {...this.s.get('config', 'jupiter-rate'), blockedUntil: this.clock() + wait * 1000});
     }
     if (!response.ok) {if(response.status===429||response.status>=500)throw retryError('Jupiter 报价 HTTP '+response.status,this.status().blockedUntil);throw Error('Jupiter 报价 HTTP ' + response.status);}
-    const q = await response.json();
+    // fetch resolves at headers; its abort signal also applies while consuming
+    // the body. A timeout/reset here must retain the same bounded retry policy.
+    let q;
+    try {q = await response.json();}
+    catch (error) {throw quoteReadError(error,'body');}
     if(q?.error||q?.errorCode||q?.outAmount==='0')throw retryError('Jupiter 暂未返回可用路由');
     validateOrder(q, {inputMint, outputMint, amount, taker, slippageBps});
     return {...q, receivedAt: this.clock()};
