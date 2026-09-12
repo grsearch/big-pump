@@ -1,4 +1,5 @@
 import {attributedOrder,quotedRoute,tradeSymbol} from '../lib/live-records.ts';
+import {redact} from './audit.mjs';
 import {Jupiter, SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
 import {LiveWallet} from './live-wallet.mjs';
 import {fastGraduation} from './stonk.mjs';
@@ -165,12 +166,12 @@ export class LiveTrading {
       if (this.clock() - (order.reconciledAt ?? 0) < 5000) continue;
       order.reconciledAt = this.clock(); this.s.put('live-order', order.id, order);
       let receipt;
-      try {receipt = await this.wallet.receipt(order);} catch {continue;}
+      try {receipt = await this.wallet.receipt(order);} catch(e) {this.reconcileError(order,e);continue;}
       if (!receipt) continue;
       const {signedTransaction, ...publicOrder} = order;
       this.s.db.exec('BEGIN');
       try {
-        this.s.put('live-order', order.id, {...publicOrder, status:receipt.failed ? 'failed' : 'confirmed', receipt, confirmedAt:this.clock()});
+        this.s.put('live-order', order.id, {...publicOrder, status:receipt.failed ? 'failed' : 'confirmed', reconcileError:null,reconcileRequired:false,...(publicOrder.reconcileRequired?{reason:receipt.failed?'链上交易失败':'链上与账务核对完成'}:{}), receipt, confirmedAt:this.clock()});
         if (!receipt.failed) {
           if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, strategy:order.strategy??null, exitPolicy:order.exitPolicy??null, quoteMint:order.quoteMint??null, quoteSymbol:order.quoteSymbol??null, buyRoute:order.route??null, status:'open', quantity:receipt.quantity,
             costLamports:-receipt.solDelta, openedAt:receipt.at, buySignature:order.signature, highLamports:0, trailingActive:false});
@@ -185,7 +186,16 @@ export class LiveTrading {
           if (p) this.s.put('live-position', order.ca, {...p, costLamports:p.costLamports + receipt.feeLamports});
         }
         this.s.db.exec('COMMIT');
-      } catch (e) {this.s.db.exec('ROLLBACK'); throw e;}
+      } catch (e) {this.s.db.exec('ROLLBACK');this.reconcileError(order,e);}
     }
+  }
+  reconcileError(order,error){
+    const current=this.s.get('live-order',order.id)??order;
+    const message=String(redact(error?.message??'对账失败')).slice(0,500);
+    const evidence=error?.code==='RECEIPT_ACCOUNTING_REVIEW'?redact(error.diagnostic):current.reconciliationEvidence??null;
+    this.s.put('live-order',order.id,{...current,reconcileError:message,reconcileRequired:true,
+      reconcileErrorAt:this.clock(),reconcileFailures:(current.reconcileFailures??0)+1,
+      reconciliationEvidence:evidence,reason:evidence?.chainSuccess?'链上已成功，账务待核对':'对账异常，等待重试'});
+    if(current.reconcileError!==message)this.s.event('live','实盘对账异常：'+message,order.ca);
   }
 }

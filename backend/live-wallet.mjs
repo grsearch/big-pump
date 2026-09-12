@@ -65,13 +65,22 @@ export class LiveWallet {
     const tx = await this.rpc('getTransaction', [order.signature, {encoding:'json', commitment:'finalized', maxSupportedTransactionVersion:0}]);
     if (!tx?.meta) return null;
     if (tx.meta.err) return {failed:true, feeLamports:tx.meta.fee};
-    const keys = tx.transaction.message.accountKeys.map(k => typeof k === 'string' ? k : k.pubkey);
+    const keys = [...tx.transaction.message.accountKeys.map(k => typeof k === 'string' ? k : k.pubkey),...(tx.meta.loadedAddresses?.writable??[]),...(tx.meta.loadedAddresses?.readonly??[])];
     const index = keys.indexOf(this.address);
     if (index < 0) throw Error('成交回执不包含交易钱包');
     const total = list => (list ?? []).filter(t => t.owner === this.address && t.mint === order.ca).reduce((sum,t) => sum + BigInt(t.uiTokenAmount.amount), 0n);
     const delta = total(tx.meta.postTokenBalances) - total(tx.meta.preTokenBalances);
     const solDelta = tx.meta.postBalances[index] - tx.meta.preBalances[index];
-    if (!Number.isSafeInteger(solDelta) || (order.side === 'buy' ? delta <= 0n || solDelta >= 0 : delta >= 0n)) throw Error('成交变化异常，需要人工核对');
+    if (!Number.isSafeInteger(solDelta) || (order.side === 'buy' ? delta <= 0n || solDelta >= 0 : delta >= 0n)) {
+      // Finalized success is different from a pending or failed transaction. Do not
+      // replace its cost with the requested input or rebroadcast it after expiry.
+      const owned=list=>(list??[]).filter(t=>t.owner===this.address).map(t=>({accountIndex:t.accountIndex,mint:t.mint,amount:t.uiTokenAmount?.amount,decimals:t.uiTokenAmount?.decimals}));
+      throw Object.assign(new Error('链上已成功，钱包资产变化无法直接计为交易成本，需要核对资金来源'),{
+        code:'RECEIPT_ACCOUNTING_REVIEW',diagnostic:{chainStatus:'finalized',chainSuccess:true,signature:order.signature,
+          at:Number.isFinite(tx.blockTime)?tx.blockTime*1000:null,solDelta:Number.isSafeInteger(solDelta)?solDelta:null,
+          targetMint:order.ca,targetDelta:delta.toString(),feeLamports:tx.meta.fee,
+          preTokenBalances:owned(tx.meta.preTokenBalances),postTokenBalances:owned(tx.meta.postTokenBalances)}});
+    }
     return {failed:false, quantity:(delta < 0n ? -delta : delta).toString(), solDelta, at:tx.blockTime * 1000, feeLamports:tx.meta.fee};
   }
 }
