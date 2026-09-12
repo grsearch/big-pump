@@ -2,6 +2,8 @@ import {readFileSync} from 'node:fs';
 import {Keypair, PublicKey, VersionedTransaction} from '@solana/web3.js';
 import {SOL} from './jupiter.mjs';
 import {nativeCashback} from './live-cashback.mjs';
+import {performance} from 'node:perf_hooks';
+const freshQuoteError=message=>Object.assign(new Error(message),{retryable:true,diagnostic:{phase:'prepare',kind:'quote-expired'}});
 
 const TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -28,29 +30,36 @@ export class LiveWallet {
     this.rpc = rpc; this.env = env; this.fetch = fetcher;
   }
   async prepare(q, side, maxFeeLamports) {
-    if (Date.now() - q.receivedAt > 10000) throw Error('报价已过期');
-    if (q.expireAt && Date.parse(q.expireAt) <= Date.now() + 2000) throw Error('路由即将过期');
+    if (Date.now() - q.receivedAt > 10000) throw freshQuoteError('报价已过期');
+    if (q.expireAt && Date.parse(q.expireAt) <= Date.now() + 2000) throw freshQuoteError('路由即将过期');
     const fees = q.signatureFeeLamports + q.prioritizationFeeLamports + q.rentFeeLamports;
     if (fees > maxFeeLamports) throw Error('网络费用及租金超过上限');
     const tx = VersionedTransaction.deserialize(Buffer.from(q.transaction, 'base64'));
     if (tx.message.staticAccountKeys[0].toBase58() !== this.address || tx.message.header.numRequiredSignatures !== 1) throw Error('首版只支持本钱包单签付款路由');
     const mint = side === 'buy' ? q.outputMint : q.inputMint;
     if ((side === 'buy' ? q.inputMint : q.outputMint) !== SOL) throw Error('交易必须以 SOL 结算');
-    const mintInfo = await this.rpc('getAccountInfo', [mint, {encoding:'base64', commitment:'confirmed'}]);
-    const program = mintInfo?.value?.owner;
+    const atas=[TOKEN,TOKEN_2022].map(program=>PublicKey.findProgramAddressSync([this.keypair.publicKey.toBuffer(),new PublicKey(program).toBuffer(),new PublicKey(mint).toBuffer()],ASSOCIATED)[0].toBase58());
+    // One RPC snapshot covers the mint, SOL balance and either token program's
+    // ATA. No dependency on a first RPC round-trip, and no cached balances.
+    const rpcStart=performance.now();let before;
+    try{before=await this.rpc('getMultipleAccounts',[[this.address,mint,...atas],{encoding:'base64',commitment:'confirmed'}]);}
+    catch{throw Object.assign(new Error('签名前账户核验请求失败，等待重试'),{retryable:true,diagnostic:{phase:'prepare-rpc',rpcMs:Math.round(performance.now()-rpcStart)}});}
+    const prepareTiming={rpcMs:Math.round(performance.now()-rpcStart)};
+    if(!Array.isArray(before?.value)||before.value.length!==4)throw Object.assign(new Error('账户核验响应不完整'),{retryable:true});
+    const program = before.value[1]?.owner;
     if (![TOKEN, TOKEN_2022].includes(program)) throw Error('不支持的代币程序');
-    const ata = PublicKey.findProgramAddressSync([this.keypair.publicKey.toBuffer(), new PublicKey(program).toBuffer(), new PublicKey(mint).toBuffer()], ASSOCIATED)[0].toBase58();
-    const before = await this.rpc('getMultipleAccounts', [[this.address, ata], {encoding:'base64', commitment:'confirmed'}]);
     const balance = before?.value?.[0]?.lamports;
     const tokenAmount = a => a ? Buffer.from(a.data[0], 'base64').readBigUInt64LE(64) : 0n;
-    const prior = tokenAmount(before?.value?.[1]);
+    const prior = tokenAmount(before.value[program===TOKEN?2:3]);
     if (!Number.isSafeInteger(balance)) throw Error('钱包余额不可用');
     if (side === 'buy' && prior > 0n) throw Error('钱包已持有该币，避免混入历史仓位');
     if (side === 'sell' && prior < BigInt(q.inAmount)) throw Error('链上代币余额不足');
     if (balance < fees + (side === 'buy' ? Number(q.inAmount) + maxFeeLamports : 0) + 1000000) throw Error('SOL 余额不足（保留卖出费用）');
-    if (Date.now() - q.receivedAt > 10000) throw Error('核验完成时报价已过期');
+    if (Date.now() - q.receivedAt > 10000 || q.expireAt && Date.parse(q.expireAt)<=Date.now()+2000) {
+      const error=freshQuoteError('核验完成时报价已过期');error.diagnostic={...error.diagnostic,...prepareTiming,quoteAgeMs:Date.now()-q.receivedAt};throw error;
+    }
     tx.sign([this.keypair]);
-    return {signature:base58(tx.signatures[0]), signedTransaction:Buffer.from(tx.serialize()).toString('base64')};
+    return {signature:base58(tx.signatures[0]), signedTransaction:Buffer.from(tx.serialize()).toString('base64'),prepareTiming};
   }
   async execute(order) {
     // A timeout or a Failed response is not proof of non-inclusion; always reconcile the signature.

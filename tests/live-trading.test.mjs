@@ -188,13 +188,13 @@ test('local signer skips simulation and retains payer, fee and balance checks',a
   let balance=1000000000;const calls=[];
   const rpc=async method=>{calls.push(method);
     if(method==='getAccountInfo')return {value:{owner:'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'}};
-    if(method==='getMultipleAccounts')return {value:[{lamports:balance},null]};
+    if(method==='getMultipleAccounts')return {value:[{lamports:balance},{owner:'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'},null,null]};
     throw Error('Unexpected RPC');
   };
   const wallet={address:keypair.publicKey.toBase58(),keypair,rpc};
   const q=quote({outputMint:mint,taker:wallet.address,receivedAt:Date.now(),transaction:Buffer.from(tx.serialize()).toString('base64')});
   await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',1000),/费用/);
-  const signed=await LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000);assert(signed.signature);assert.deepEqual(calls,['getAccountInfo','getMultipleAccounts']);
+  const signed=await LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000);assert(signed.signature);assert.deepEqual(calls,['getMultipleAccounts']);
   balance=0;await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000),/余额不足/);
   balance=1000000000;wallet.address=Keypair.generate().publicKey.toBase58();await assert.rejects(LiveWallet.prototype.prepare.call(wallet,q,'buy',5000000),/付款路由/);
 });
