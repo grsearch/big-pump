@@ -45,6 +45,15 @@ export class LiveTrading {
     if (this.wallet && boundWallet && boundWallet !== this.wallet.address) this.error = '钱包与持久化实盘账本不一致，不能接管原钱包持仓';
   }
   state() {return this.s.get('config', 'live-trading') ?? {acceptEntries:false, startedAt:null, seen:{}};}
+  scheduleRetry(at){
+    if(this.disposed||(Number.isFinite(this.retryWakeAt)&&this.retryWakeAt<=at))return;
+    clearTimeout(this.retryTimer);this.retryWakeAt=at;
+    this.retryTimer=setTimeout(()=>{this.retryWakeAt=null;this.retryTimer=null;if(this.disposed)return;
+      if(this.busy){this.wakePending=this.collectorRunning;return;}
+      void this.tick(this.collectorRunning).catch(()=>{});
+    },Math.max(0,at-this.clock()));this.retryTimer.unref?.();
+  }
+  dispose(){this.disposed=true;clearTimeout(this.retryTimer);}
   onGraduation(collectorRunning){this.wakePending=collectorRunning;return this.tick(collectorRunning);}
   snapshot() {
     const state = this.state();
@@ -102,7 +111,7 @@ export class LiveTrading {
     const id = 'buy:' + t.ca + ':' + observation.at;
     const previous=this.s.get('live-order',id),attempts=(previous?.attempts??0)+1;
     const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, strategy:LIVE_C, exitPolicy:{...C_EXIT_POLICY}, quoteMint:t.quoteMint??null, quoteSymbol:t.quoteSymbol??null, side:'buy', at:this.clock(), signalAt:observation.at,
-      detectedAt:t.enrolledAt,entryPolicy:ENTRY_POLICY,attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
+      detectedAt:t.enrolledAt,entryPolicy:ENTRY_POLICY,entryTiming:{discoveryDelayMs:t.enrolledAt-t.graduatedAt,remainingMs:Math.max(0,t.graduatedAt+ENTRY_POLICY.windowMs-this.clock())},attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
     this.s.put('live-order', id, intent);
     try {
       const q = await this.jup.order(SOL, t.ca, BUY_LAMPORTS, 'buy', this.wallet.address, this.slippageBps);
@@ -117,6 +126,7 @@ export class LiveTrading {
       const nextAttemptAt=Math.max(this.clock()+[300,600,1000][Math.min(2,attempts-1)],e.retryAt??0);
       const retry=e.retryable===true&&attempts<ENTRY_POLICY.maxAttempts&&this.collectorRunning!==false&&this.state().acceptEntries&&nextAttemptAt<=observation.at+ENTRY_POLICY.windowMs;
       this.s.put('live-order', id, {...intent,status:retry?'retrying':'skipped',nextAttemptAt:retry?nextAttemptAt:null,reason:e.message,diagnostic:e.diagnostic??null});
+      if(retry)this.scheduleRetry(nextAttemptAt);
     }}
   }
   async exitTick(){

@@ -1,4 +1,5 @@
 import {ENTRY_POLICY} from './live-entry.mjs';
+import {performance} from 'node:perf_hooks';
 export const SOL = 'So11111111111111111111111111111111111111112';
 export const BUY_LAMPORTS = '100000000';
 const integer = value => typeof value === 'string' && /^[0-9]+$/.test(value);
@@ -48,10 +49,12 @@ export class Jupiter {
     // Optional tip must be omitted when unused: explicit zero is rejected by Jupiter.
     if (taker) params.set('taker', taker);
     const startedAt=this.clock(),timeoutMs=side==='buy'?ENTRY_POLICY.quoteTimeoutMs:10000;
+    const loopStart=performance.eventLoopUtilization(),monotonicStart=performance.now();
+    const runtime=()=>{const loop=performance.eventLoopUtilization(loopStart);return {wallElapsedMs:Math.round(performance.now()-monotonicStart),eventLoopActiveMs:Math.round(loop.active),eventLoopIdleMs:Math.round(loop.idle)};};
     let response;
     try {response = await this.fetch('https://api.jup.ag/swap/v2/order?' + params, {
       headers: {'x-api-key': this.env.JUPITER_API_KEY}, signal: AbortSignal.timeout(timeoutMs)});
-    } catch (error) {const e=quoteReadError(error,'headers');e.diagnostic.elapsedMs=this.clock()-startedAt;e.diagnostic.timeoutMs=timeoutMs;throw e;}
+    } catch (error) {const e=quoteReadError(error,'headers');e.diagnostic={...e.diagnostic,elapsedMs:this.clock()-startedAt,timeoutMs,runtime:runtime()};throw e;}
     const headersAt=this.clock();
     if (response.status === 429) {
       const raw=response.headers.get('retry-after'),seconds=Number(raw);
@@ -63,7 +66,7 @@ export class Jupiter {
     // the body. A timeout/reset here must retain the same bounded retry policy.
     let q;
     try {q = await response.json();}
-    catch (error) {const e=quoteReadError(error,'body');e.diagnostic={...e.diagnostic,headersMs:headersAt-startedAt,bodyMs:this.clock()-headersAt,timeoutMs};throw e;}
+    catch (error) {const e=quoteReadError(error,'body');e.diagnostic={...e.diagnostic,headersMs:headersAt-startedAt,bodyMs:this.clock()-headersAt,timeoutMs,runtime:runtime()};throw e;}
     if(q?.error||q?.errorCode||q?.outAmount==='0')throw retryError('Jupiter 暂未返回可用路由');
     validateOrder(q, {inputMint, outputMint, amount, taker, slippageBps});
     return {...q, receivedAt: this.clock(),timing:{headersMs:headersAt-startedAt,bodyMs:this.clock()-headersAt,totalMs:this.clock()-startedAt,timeoutMs}};
