@@ -1,3 +1,4 @@
+import {quoteFields,enrichMetadata} from './stonk-metadata.mjs';
 import {createHash} from 'node:crypto';
 import {jsonFetch} from './providers.mjs';
 
@@ -39,7 +40,7 @@ export function stonkCandidate(t,now=Date.now()){
  const at=Date.parse(t?.graduatedAt);if(t?.launchpad!=='launchlab'||t.status!=='graduated'||!address(t.mint)||!address(t.pool)||!Number.isFinite(at)||at>now||now-at>=86400000)return null;
  const createdAt=Date.parse(t.createdAt);
  const bps=t.transferFee?.bps;
- return {ca:t.mint,pool:t.pool,createdAt,reportedGraduatedAt:at,symbol:t.symbol,name:t.name,quoteMint:t.quote?.mint,quoteSymbol:t.quote?.symbol??'未知',transferFeeBps:Number.isInteger(bps)&&bps>=0&&bps<=10000?bps:t.mode==='standard'?0:null,mode:t.mode??'unknown',links:t.links??{},market:t.market??{}};
+ return {...quoteFields(t),ca:t.mint,pool:t.pool,createdAt,reportedGraduatedAt:at,symbol:t.symbol,name:t.name,quoteMint:t.quote?.mint,quoteSymbol:t.quote?.symbol??'未知',transferFeeBps:Number.isInteger(bps)&&bps>=0&&bps<=10000?bps:t.mode==='standard'?0:null,mode:t.mode??'unknown',links:t.links??{},market:t.market??{}};
 }
 export class StonkDiscovery{
  constructor(worker){this.w=worker;this.s=worker.s;this.nextPoll=0;this.nextVerify=0;this.status='等待启动';
@@ -97,9 +98,9 @@ export class StonkDiscovery{
   }
   this.enroll({...found,createdAt,creationVerified:true,creationSignature:c.signature,creator:c.creator,creatorVerified:c.creatorVerified,creationTimeSource:'链上 LaunchLab 初始化'},signature);return true;
  }
- enroll(found,signature){if(!found.creationVerified||!fastGraduation(found.createdAt,found.graduatedAt)||this.s.get('token',found.ca))return;const c=this.s.get('stonk-candidate',found.ca);this.w.enroll(found,null);const t=this.s.get('token',found.ca);if(!t)return;this.s.put('token',found.ca,{...t,...found,migrationSignature:signature,...(c?this.metadata(c):{}),smartCoverage:'按实际余额变化统计；缺少历史汇率的样本不验证',shadowBlocked:'等待链上税费与计价资产行情'});this.s.event('migration','Stonk 链上迁移已验证 · 创建后 20 分钟内毕业',found.ca);this.w.onGraduation?.();this.w.analysis.shadowTick();}
- metadata(c){const x=c.links?.twitter?.match(/^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/)?.[1];return {symbol:c.symbol??c.ca.slice(0,5),name:c.name??'Stonk',quoteMint:c.quoteMint,quoteSymbol:c.quoteSymbol,transferFeeBps:c.transferFeeBps,launchMode:c.mode,xAccount:x??null};}
- async pollPage(page){const j=await jsonFetch('https://www.stonkfun.xyz/api/public/v1/tokens?status=graduated&sort=newest&pageSize=100&page='+page);if(!Array.isArray(j.data?.tokens))throw Error('Stonk 响应格式无效');for(const row of j.data.tokens){const c=stonkCandidate(row);if(!c)continue;const old=this.s.get('stonk-candidate',c.ca);if(!old&&!fastGraduation(c.createdAt,c.reportedGraduatedAt))this.s.event('filter','官方创建时间异常或超时，保留候选等待链上复核',c.ca);this.s.put('stonk-candidate',c.ca,{...old,...c,seenAt:Date.now()});const t=this.s.get('token',c.ca);if(t?.source==='stonk'){this.s.put('token',c.ca,{...t,...this.metadata(c),xAccount:t.xAccount??this.metadata(c).xAccount});}}
+ enroll(found,signature){if(!found.creationVerified||!fastGraduation(found.createdAt,found.graduatedAt)||this.s.get('token',found.ca))return;const c=this.s.get('stonk-candidate',found.ca);this.w.enroll(found,null);const t=this.s.get('token',found.ca);if(!t)return;this.s.put('token',found.ca,{...t,...found,migrationSignature:signature,...(c?this.metadata(c,found):{}),smartCoverage:'按实际余额变化统计；缺少历史汇率的样本不验证',shadowBlocked:'等待链上税费与计价资产行情'});this.s.event('migration','Stonk 链上迁移已验证 · 创建后 20 分钟内毕业',found.ca);this.w.onGraduation?.();this.w.analysis.shadowTick();}
+ metadata(c,t){return enrichMetadata(c,t); }
+ async pollPage(page){const j=await jsonFetch('https://www.stonkfun.xyz/api/public/v1/tokens?status=graduated&sort=newest&pageSize=100&page='+page);if(!Array.isArray(j.data?.tokens))throw Error('Stonk 响应格式无效');for(const row of j.data.tokens){const c=stonkCandidate(row);if(!c)continue;const old=this.s.get('stonk-candidate',c.ca);if(!old&&!fastGraduation(c.createdAt,c.reportedGraduatedAt))this.s.event('filter','官方创建时间异常或超时，保留候选等待链上复核',c.ca);this.s.put('stonk-candidate',c.ca,{...old,...c,seenAt:Date.now()});const t=this.s.get('token',c.ca);if(t?.source==='stonk'){this.s.put('token',c.ca,{...t,...this.metadata(c,t)});}}
  return Math.max(1,Number(j.data?.pagination?.totalPages)||1);}
  async tick(){if(this.busy)return;this.busy=true;try{await this.run();}finally{this.busy=false;}}
  async run(){if(!this.enabled()){this.status='未开启';return;}if(!this.w.rpc){this.status='需要 Helius 核验迁移';return;}const now=Date.now();

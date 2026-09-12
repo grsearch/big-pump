@@ -10,5 +10,5 @@ export function tokenStreams(t){return {
  holders:{at:t.holdersCheckedAt??t.holdersAt,count:t.holders,sourceAt:t.holdersAt,error:t.holdersError},
  x:{at:t.lastXAt,observation:t.xObservations?.at(-1),status:t.status,reason:t.reason,pauseReason:t.xPauseReason},
  execution:{execution:t.execution,smartBought:t.smartBought,smartHolding:t.smartHolding,smartNew:t.smartNew},
- identity:{createdAt:t.createdAt,graduatedAt:t.graduatedAt,enrolledAt:t.enrolledAt,creator:t.creator,creatorVerified:t.creatorVerified,creationSignature:t.creationSignature,quoteMint:t.quoteMint,pool:t.pool,symbol:t.symbol,xAccount:t.xAccount},
+ identity:{createdAt:t.createdAt,graduatedAt:t.graduatedAt,enrolledAt:t.enrolledAt,creator:t.creator,creatorVerified:t.creatorVerified,creationSignature:t.creationSignature,quoteMint:t.quoteMint,quoteSymbol:t.quoteSymbol,quoteName:t.quoteName,quoteCategory:t.quoteCategory,quoteCategoryLabel:t.quoteCategoryLabel,launchMode:t.launchMode,transferFeeBps:t.transferFeeBps,quoteOnlyFees:t.quoteOnlyFees,quoteMetadataMismatch:t.quoteMetadataMismatch,pool:t.pool,symbol:t.symbol,xAccount:t.xAccount},
  };}
