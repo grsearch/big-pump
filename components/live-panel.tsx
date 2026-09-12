@@ -1,20 +1,24 @@
 'use client';
+import TradeRoute from './trade-route';
+import {strategyName,strategyBucket,attributedOrder} from '../lib/live-records';
 import {useEffect,useState} from 'react';
 import {livePositionView,livePortfolio} from '../lib/live-view';
 const sol = (n:any) => Number.isFinite(n) ? (n / 1e9).toFixed(5) + ' SOL' : '—';
 const stamp=(n:any)=>Number.isFinite(n)?new Date(n).toLocaleString():'—';
 const signed=(n:any)=>Number.isFinite(n)?(n>0?'+':'')+sol(n):'—';
 const tone=(n:any)=>!Number.isFinite(n)||n===0?'':n>0?'live-gain':'live-loss';
-const tx = (signature?:string) => signature?<a href={'https://solscan.io/tx/'+signature} target="_blank" rel="noreferrer">链上成交 ↗</a>:null;
+const tx = (signature?:string) => signature?<a href={'https://solscan.io/tx/'+signature} target="_blank" rel="noreferrer">链上交易 ↗</a>:null;
 export default function LivePanel({data,demo,online,busy,act}:any) {
   const [confirm,setConfirm]=useState(false);
+  const [strategy,setStrategy]=useState('c');
   const [now,setNow]=useState(Date.now),[history,setHistory]=useState<'closed'|'orders'>('closed'),[page,setPage]=useState(1);
   useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),1000);return ()=>clearInterval(timer);},[]);
-  const live=data?.liveTrading, positions=live?.positions??[], orders=live?.orders??[];
-  const open=positions.filter((p:any)=>p.status==='open'), closed=positions.filter((p:any)=>p.status==='closed');
-  const failedFees=orders.filter((o:any)=>o.status==='failed'&&o.side==='buy').reduce((sum:number,o:any)=>sum+(o.receipt?.feeLamports??0),0);
+  const live=data?.liveTrading, positions=live?.positions??[], orders=(live?.orders??[]).map((o:any)=>attributedOrder(o,positions));
+  const open=positions.filter((p:any)=>p.status==='open'), closed=positions.filter((p:any)=>p.status==='closed'&&(strategy==='all'||strategyBucket(p.strategy)===strategy));
+  const historyOrders=orders.filter((o:any)=>strategy==='all'||strategyBucket(o.strategy)===strategy);
+  const failedFees=historyOrders.filter((o:any)=>o.status==='failed'&&o.side==='buy').reduce((sum:number,o:any)=>sum+(o.receipt?.feeLamports??0),0);
   const portfolio=livePortfolio(positions,now,online);
-  const records=(history==='closed'?closed:orders).slice().sort((a:any,b:any)=>(history==='closed'?b.closedAt-a.closedAt:(b.confirmedAt??b.at)-(a.confirmedAt??a.at)));
+  const records=(history==='closed'?closed:historyOrders).slice().sort((a:any,b:any)=>(history==='closed'?b.closedAt-a.closedAt:(b.confirmedAt??b.at)-(a.confirmedAt??a.at)));
   const pages=Math.max(1,Math.ceil(records.length/20)),currentPage=Math.min(page,pages),rows=records.slice((currentPage-1)*20,currentPage*20);
   const labels:Record<string,string>={retrying:'等待快速重试',preparing:'核验报价',confirming:'等待链上核对',confirmed:'已确认',failed:'链上失败',skipped:'已跳过'};
   return <><div className="section-intro"><h2>C · Stonk 毕业即买 · 实盘</h2><p>每次 0.1 SOL，Stonk 使用 Jupiter 路由。使用 Jupiter 即时报价，取消本程序额外的链上模拟；不要求 X 热度或 FDV 门槛，不继承 Shadow 持仓或历史信号。旧 A 记录保留，旧持仓仍按原规则管理。</p></div>
@@ -39,7 +43,7 @@ export default function LivePanel({data,demo,online,busy,act}:any) {
         const v=livePositionView(p,now,online),elapsed=Number.isFinite(p.openedAt)?Math.max(0,now-p.openedAt):null;
         const selling=orders.some((o:any)=>o.ca===p.ca&&o.side==='sell'&&o.status==='confirming');
         return <tr key={p.ca}>
-          <td><a href={'https://gmgn.ai/sol/token/'+p.ca} target="_blank" rel="noreferrer">{p.symbol||p.ca.slice(0,8)} ↗</a><small>{p.ca.slice(0,6)}…{p.ca.slice(-6)}</small><small>{p.strategy==='stonk-graduation-c-v1'?'策略 C':'旧策略 A'}</small></td>
+          <td><a href={'https://gmgn.ai/sol/token/'+p.ca} target="_blank" rel="noreferrer">{p.symbol||p.ca.slice(0,8)} ↗</a><small>{p.ca.slice(0,6)}…{p.ca.slice(-6)}</small><small>{strategyName(p.strategy)}</small></td>
           <td>{elapsed===null?'—':`${Math.floor(elapsed/60000)}分${Math.floor(elapsed/1000)%60}秒`}<small>{elapsed===null?'':elapsed>=1800000?'已到最长持仓时间':`距到期 ${Math.ceil((1800000-elapsed)/60000)} 分钟`}</small></td>
           <td>{sol(v.cost)}</td>
           <td>{v.fresh?sol(v.mark):'待更新'}<small>{p.quoteAt?`报价 ${new Date(p.quoteAt).toLocaleTimeString()}`:'尚无卖出报价'}</small>{!v.fresh&&v.mark!==null&&<small>上次净回收 {sol(v.mark)}</small>}</td>
@@ -52,12 +56,12 @@ export default function LivePanel({data,demo,online,busy,act}:any) {
     </section>
     <section className="panel live-history">
       <div className="panel-head"><h2>交易记录</h2><span>净已实现（含失败买入费用） <b className={tone(closed.reduce((n:number,p:any)=>n+(p.realizedLamports??0),0)-failedFees)}>{signed(closed.reduce((n:number,p:any)=>n+(p.realizedLamports??0),0)-failedFees)}</b></span></div>
-      <div className="toolbar"><div className="tabs"><button className={history==='closed'?'active':''} aria-pressed={history==='closed'} onClick={()=>{setHistory('closed');setPage(1);}}>已平仓 {closed.length}</button><button className={history==='orders'?'active':''} aria-pressed={history==='orders'} onClick={()=>{setHistory('orders');setPage(1);}}>订单明细 {orders.length}</button></div><span className="muted">最新记录在前</span></div>
+      <div className="toolbar"><div className="tabs"><button className={history==='closed'?'active':''} aria-pressed={history==='closed'} onClick={()=>{setHistory('closed');setPage(1);}}>已平仓 {closed.length}</button><button className={history==='orders'?'active':''} aria-pressed={history==='orders'} onClick={()=>{setHistory('orders');setPage(1);}}>订单明细 {historyOrders.length}</button></div><select aria-label="交易策略筛选" value={strategy} onChange={e=>{setStrategy(e.target.value);setPage(1);}}><option value="c">实盘 C</option><option value="a">旧实盘 A</option><option value="unknown">策略未知</option><option value="all">全部策略</option></select><span className="muted">收益按当前筛选统计 · 未成交尝试列在订单明细</span></div>
       <div className="table-scroll"><table>
-      {history==='closed'?<><thead><tr><th>平仓时间 / 买入时间</th><th>币种</th><th>投入</th><th>实际回收</th><th>已实现收益 / 收益率</th><th>退出原因 / 成交</th></tr></thead><tbody>{rows.map((p:any)=><tr key={p.ca}>
-        <td>{stamp(p.closedAt)}<small>买入 {stamp(p.openedAt)}</small></td><td><a href={'https://gmgn.ai/sol/token/'+p.ca} target="_blank" rel="noreferrer">{p.symbol||p.ca.slice(0,8)} ↗</a></td><td>{sol(p.costLamports)}</td><td>{sol(p.proceedsLamports)}</td><td className={tone(p.realizedLamports)}>{signed(p.realizedLamports)}<small>{Number.isFinite(p.realizedLamports)&&p.costLamports>0?`${(p.realizedLamports/p.costLamports*100).toFixed(2)}%`:'—'}</small></td><td className="live-reason">{p.exitReason||'—'}<small>{tx(p.sellSignature)}</small></td>
-      </tr>)}</tbody></>:<><thead><tr><th>最近时间</th><th>币种</th><th>操作</th><th>状态</th><th>实际金额</th><th>原因 / 详情</th></tr></thead><tbody>{rows.map((o:any)=><tr key={o.id}>
-        <td>{stamp(o.confirmedAt??o.at)}</td><td><a href={'https://gmgn.ai/sol/token/'+o.ca} target="_blank" rel="noreferrer">{o.symbol||o.ca.slice(0,8)} ↗</a></td><td>{o.side==='buy'?'买入':'卖出'}</td><td>{labels[o.status]||o.status}</td><td>{o.receipt?.failed?sol(o.receipt.feeLamports):Number.isFinite(o.receipt?.solDelta)?sol(Math.abs(o.receipt.solDelta)):'—'}<small>{o.receipt?.failed?'链上失败手续费':o.status==='confirmed'?'链上实际金额':'尚未确认成交'}</small></td><td className="live-reason">{o.reason||'—'}{o.attempts&&<small>尝试 {o.attempts} 次{o.status==='retrying'&&o.nextAttemptAt?` · 下次 ${new Date(o.nextAttemptAt).toLocaleTimeString()}`:''}</small>}{o.signature&&<small>{tx(o.signature)}</small>}{o.diagnostic&&<details><summary>错误详情</summary><pre>{JSON.stringify(o.diagnostic,null,2)}</pre></details>}</td>
+      {history==='closed'?<><thead><tr><th>平仓时间 / 买入时间</th><th>策略目标币</th><th>投入</th><th>实际回收</th><th>已实现收益 / 收益率</th><th>退出原因 / 成交</th></tr></thead><tbody>{rows.map((p:any)=><tr key={p.ca}>
+        <td>{stamp(p.closedAt)}<small>买入 {stamp(p.openedAt)}</small></td><td><a href={'https://gmgn.ai/sol/token/'+p.ca} target="_blank" rel="noreferrer">{p.symbol||p.ca.slice(0,8)} ↗</a><small>{strategyName(p.strategy)}</small></td><td>{sol(p.costLamports)}</td><td>{sol(p.proceedsLamports)}</td><td className={tone(p.realizedLamports)}>{signed(p.realizedLamports)}<small>{Number.isFinite(p.realizedLamports)&&p.costLamports>0?`${(p.realizedLamports/p.costLamports*100).toFixed(2)}%`:'—'}</small></td><td className="live-reason">{p.exitReason||'—'}<small>{tx(p.sellSignature)}</small><small>{p.buySignature&&<a href={'https://solscan.io/tx/'+p.buySignature} target="_blank" rel="noreferrer">买入成交 ↗</a>}</small><TradeRoute record={p}/></td>
+      </tr>)}</tbody></>:<><thead><tr><th>最近时间</th><th>策略目标币</th><th>操作</th><th>状态</th><th>实际金额</th><th>原因 / 详情</th></tr></thead><tbody>{rows.map((o:any)=><tr key={o.id}>
+        <td>{stamp(o.confirmedAt??o.at)}</td><td><a href={'https://gmgn.ai/sol/token/'+o.ca} target="_blank" rel="noreferrer">{o.symbol||o.ca.slice(0,8)} ↗</a><small>{strategyName(o.strategy)}</small></td><td>{o.side==='buy'?'买入':'卖出'}</td><td>{labels[o.status]||o.status}</td><td>{o.receipt?.failed?sol(o.receipt.feeLamports):Number.isFinite(o.receipt?.solDelta)?sol(Math.abs(o.receipt.solDelta)):'—'}<small>{o.receipt?.failed?'链上失败手续费':o.status==='confirmed'?'链上实际金额':'尚未确认成交'}</small></td><td className="live-reason">{o.reason||'—'}{o.attempts&&<small>尝试 {o.attempts} 次{o.status==='retrying'&&o.nextAttemptAt?` · 下次 ${new Date(o.nextAttemptAt).toLocaleTimeString()}`:''}</small>}{o.signature&&<small>{tx(o.signature)}</small>}<TradeRoute record={o}/>{o.diagnostic&&<details><summary>错误详情</summary><pre>{JSON.stringify(o.diagnostic,null,2)}</pre></details>}</td>
       </tr>)}</tbody></>}
       </table></div>
       {!records.length&&<div className="empty-note">{history==='closed'?'暂无已平仓记录。':'暂无订单记录。'}</div>}

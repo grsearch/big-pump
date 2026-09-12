@@ -1,3 +1,4 @@
+import {attributedOrder,quotedRoute} from '../lib/live-records.ts';
 import {Jupiter, SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
 import {LiveWallet} from './live-wallet.mjs';
 import {fastGraduation} from './stonk.mjs';
@@ -34,6 +35,8 @@ export class LiveTrading {
       try {if (!rpc || !env.JUPITER_API_KEY) throw Error('请配置 Helius 和 Jupiter'); this.wallet = new LiveWallet(env, rpc);}
       catch (e) {this.error = e.message;}
     }
+    const positions=store.all('live-position');
+    for(const order of store.all('live-order')){const enriched=attributedOrder(order,positions);if(enriched!==order)store.put('live-order',order.id,enriched);}
     const boundWallet = this.state().wallet;
     if (this.wallet && boundWallet && boundWallet !== this.wallet.address) this.error = '钱包与持久化实盘账本不一致，不能接管原钱包持仓';
   }
@@ -91,7 +94,7 @@ export class LiveTrading {
   async buy(t, observation) {
     const id = 'buy:' + t.ca + ':' + observation.at;
     const previous=this.s.get('live-order',id),attempts=(previous?.attempts??0)+1;
-    const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, strategy:LIVE_C, side:'buy', at:this.clock(), signalAt:observation.at,
+    const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, strategy:LIVE_C, quoteMint:t.quoteMint??null, quoteSymbol:t.quoteSymbol??null, side:'buy', at:this.clock(), signalAt:observation.at,
       detectedAt:t.enrolledAt,attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
     this.s.put('live-order', id, intent);
     try {
@@ -132,13 +135,14 @@ export class LiveTrading {
       Object.assign(position, {markLamports:value, quoteAt:this.clock(), quoteError:null, exitReason:reason});
       this.s.put('live-position', position.ca, position);
       if (!reason) return;
-      const intent = {id:'sell:' + position.ca + ':' + this.clock(), ca:position.ca, symbol:position.symbol, side:'sell', at:this.clock(), status:'preparing', inputAmount:position.quantity, reason};
+      const intent = {id:'sell:' + position.ca + ':' + this.clock(), ca:position.ca, symbol:position.symbol, strategy:position.strategy??null, source:position.source, quoteMint:position.quoteMint??null, quoteSymbol:position.quoteSymbol??null, side:'sell', at:this.clock(), status:'preparing', inputAmount:position.quantity, reason};
       this.s.put('live-order', intent.id, intent);
       try {await this.submit(intent, q);}
       catch (e) {if (this.s.get('live-order', intent.id)?.status !== 'confirming') this.s.put('live-order', intent.id, {...intent, status:'skipped', reason:e.message,diagnostic:e.diagnostic??null}); throw e;}
     } catch (e) {this.s.put('live-position', position.ca, {...position, quoteError:e.message});}
   }
   async submit(intent, quote) {
+    intent.route=quotedRoute(quote);
     intent.prepareStartedAt=this.clock();
     const signed = await this.wallet.prepare(quote, intent.side, this.maxFeeLamports);
     if (intent.side === 'buy' && (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(this.s.get('token',intent.ca),this.state(),this.clock()))) throw Error('签名后入场已暂停或过期');
@@ -162,13 +166,13 @@ export class LiveTrading {
       try {
         this.s.put('live-order', order.id, {...publicOrder, status:receipt.failed ? 'failed' : 'confirmed', receipt, confirmedAt:this.clock()});
         if (!receipt.failed) {
-          if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, strategy:order.strategy??'legacy-a', status:'open', quantity:receipt.quantity,
+          if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, strategy:order.strategy??null, quoteMint:order.quoteMint??null, quoteSymbol:order.quoteSymbol??null, buyRoute:order.route??null, status:'open', quantity:receipt.quantity,
             costLamports:-receipt.solDelta, openedAt:receipt.at, buySignature:order.signature, highLamports:0, trailingActive:false});
           else {
             const p = this.s.get('live-position', order.ca);
             if (!p || receipt.quantity !== p.quantity) throw Error('卖出回执数量不一致');
             this.s.put('live-position', order.ca, {...p, status:'closed', closedAt:receipt.at, proceedsLamports:receipt.solDelta,
-              realizedLamports:receipt.solDelta-p.costLamports, sellSignature:order.signature, exitReason:order.exitReason});
+              realizedLamports:receipt.solDelta-p.costLamports, sellSignature:order.signature, sellRoute:order.route??null, exitReason:order.exitReason});
           }
         } else if (order.side === 'sell') {
           const p = this.s.get('live-position', order.ca);

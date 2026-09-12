@@ -9,6 +9,14 @@ def clean(v):
     if isinstance(v,str): return re.sub(r'([?&](?:api-key|token|key)=)[^&\s]+',r'\1[redacted]',re.sub(r'Bearer\s+\S+','Bearer [redacted]',v,flags=re.I),flags=re.I)
     return v
 
+def attribute_order(order,positions):
+    if order.get('strategy') or order.get('side') not in ['buy','sell']:return order
+    key='buySignature' if order.get('side')=='buy' else 'sellSignature'
+    matches=[p for p in positions if order.get('signature') and p.get('ca')==order.get('ca') and p.get(key)==order['signature']]
+    if len(matches)==1 and matches[0].get('strategy'):
+        return {**order,'strategy':matches[0]['strategy'],'strategyEvidence':'对应持仓的成交签名匹配'}
+    return order
+
 def export(db_path,out,end):
     start=end-86400000
     root=pathlib.Path(out)/dt.datetime.fromtimestamp(end/1000,TZ).strftime('%Y-%m-%d-%H%M%S');root.mkdir(parents=True,exist_ok=True)
@@ -17,6 +25,8 @@ def export(db_path,out,end):
         src=sqlite3.connect(pathlib.Path(db_path).resolve().as_uri()+'?mode=ro',uri=True)
         snap=sqlite3.connect(str(pathlib.Path(tmp)/'snapshot.db'));src.backup(snap);src.close()
         rows=[(k,i,clean(json.loads(d))) for k,i,d in snap.execute('SELECT kind,id,data FROM records')]
+        all_positions=[d for k,i,d in rows if k=='live-position']
+        rows=[(k,i,attribute_order(d,all_positions) if k=='live-order' else d) for k,i,d in rows]
         orders=[d for k,i,d in rows if k=='live-order' and any(isinstance(d.get(t),(int,float)) and start<=d[t]<end for t in ['at','firstAttemptAt','broadcastAt','confirmedAt','reconciledAt'])]
         positions=[d for k,i,d in rows if k=='live-position' and ((d.get('status')=='open' and d.get('openedAt',0)<end) or start<=d.get('closedAt',0)<end or start<=d.get('openedAt',0)<end)]
         cas={d.get('ca') for d in orders+positions}

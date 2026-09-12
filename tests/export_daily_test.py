@@ -1,5 +1,9 @@
 import importlib.util,pathlib,sqlite3,tempfile,json,tarfile,hashlib
 spec=importlib.util.spec_from_file_location('daily','scripts/export_daily.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+order={'ca':'coin','side':'sell','signature':'sig'};pos={'ca':'coin','strategy':'stonk-graduation-c-v1','sellSignature':'sig'}
+assert m.attribute_order(order,[pos])['strategy']==pos['strategy']
+assert 'strategy' not in m.attribute_order({**order,'signature':'other'},[pos])
+assert 'strategy' not in m.attribute_order(order,[pos,pos])
 with tempfile.TemporaryDirectory() as tmp:
  p=pathlib.Path(tmp);db=sqlite3.connect(p/'db.sqlite');db.executescript('CREATE TABLE records(kind TEXT,id TEXT,data TEXT); CREATE TABLE posts(id TEXT,ca TEXT,at INTEGER,data TEXT); CREATE TABLE charges(day TEXT,id TEXT,cost REAL); CREATE TABLE audit(seq INTEGER PRIMARY KEY,at INTEGER,kind TEXT,ca TEXT,data TEXT);');end=1800000000000
  old={'id':'buy','ca':'coin','side':'buy','at':end-90000000,'signedTransaction':'NEVER_EXPORT'};position={'ca':'coin','status':'closed','openedAt':end-90000000,'closedAt':end-1000,'costLamports':100}
