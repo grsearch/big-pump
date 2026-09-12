@@ -1,9 +1,16 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {Store} from '../backend/store.mjs';import {Worker} from '../backend/worker.mjs';import {newToken} from '../lib/engine.ts';import {xSchedule} from '../lib/x-schedule.ts';
 import {LiveTrading,LIVE_C} from '../backend/live-trading.mjs';
+import {inResearchWindow} from '../lib/monitor-window.ts';
+test('full research window covers 30 through 60 minutes, including closed live positions',()=>{
+ const at=1800000000000,t={enrolledAt:at};
+ assert.equal(inResearchWindow(t,at-1),false);assert.equal(inResearchWindow(t,at+1800000),true);
+ assert.equal(inResearchWindow(t,at+3599999),true);assert.equal(inResearchWindow(t,at+3600000),false);
+ assert.equal(inResearchWindow({},at),false);
+});
 test('minimum research window survives low FDV, data gaps and budget sleep; X never overspends',async()=>{
  const s=new Store(':memory:'),now=Date.now(),t={...newToken('coin','pool',now-900000,now-600000),fdv:1,marketError:'missing',status:'sleeping',cost:.5};const w=new Worker(s,{ENABLE_X:'true',X_BEARER_TOKEN:'test'});w.running=true;s.put('token',t.ca,t);
- try{assert.equal(w.transitionToken(t,s.rules(),now,0).status,'observing');assert.equal(xSchedule([t],now,10000).length,1);await w.xPoll();assert.equal(s.cost(),0);assert.equal(w.transitionToken(t,s.rules(),now+1800000,0).status,'sleeping');}finally{s.close();}
+ try{assert.equal(w.transitionToken(t,s.rules(),now,0).status,'observing');assert.equal(xSchedule([t],now,10000).length,1);await w.xPoll();assert.equal(s.cost(),0);assert.equal(w.transitionToken(t,s.rules(),now+3600000,0).status,'sleeping');}finally{s.close();}
 });
 test('observation audit preserves earlier market and posts beyond deletion, never signing payload',()=>{
  const s=new Store(':memory:'),now=Date.now(),t=newToken('coin','pool',now,now);try{s.put('token','coin',{...t,marketCheckedAt:now,fdv:100});s.put('token','coin',{...t,marketCheckedAt:now+1,fdv:1});s.post({id:'p',ca:'coin',at:now,text:'evidence'});s.put('live-order','o',{ca:'coin',signedTransaction:'private-payload',diagnostic:{apiKey:'sensitive'},status:'confirming'});const rows=s.db.prepare('SELECT * FROM audit').all();assert.equal(rows.filter(r=>r.kind==='market').length,2);assert(rows.some(r=>r.kind==='post'));assert(!JSON.stringify(rows).includes('private-payload'));assert(!JSON.stringify(rows).includes('sensitive'));}finally{s.close();}

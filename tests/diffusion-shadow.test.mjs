@@ -66,7 +66,7 @@ test('scheduler caps boost pool, expires boost and respects absence of tradable 
   assert.equal(xSchedule(many,now,10000).filter(x=>x.interval===15000).length,5);
   assert.equal(xSchedule([token({enrolledAt:now-600000,xObservations:[obs(now,{authors:0})]})],now,10000)[0].interval,120000);
   assert.equal(xSchedule([token({enrolledAt:now-600000})],now,10000)[0].interval,60000);
-  assert.equal(xSchedule([token({fdv:9999,enrolledAt:now-1800001})],now,10000).length,0);
+  assert.equal(xSchedule([token({fdv:9999,enrolledAt:now-3600001})],now,10000).length,0);
 });
 test('X is serialized and transient reserved budget does not prematurely sleep a token',async t=>{
   const s=new Store(':memory:'),w=new Worker(s,{X_BEARER_TOKEN:'test',ENABLE_X:'true'}),at=Date.now();w.running=true;

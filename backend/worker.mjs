@@ -27,7 +27,7 @@ export class Worker {
   if(now-this.lastResearch>60000){this.lastResearch=now;this.reassessWallets();if(this.rpc){if(this.env.ENABLE_WALLET_RESEARCH==='true'){try{await this.researchTick();}catch{this.s.event('data','钱包样本发现失败，继续已有钱包核验');}}}}
   this.analysis.shadowTick();this.s.purgeExpired();void this.analysis.tick().catch(()=>{});this.status.lastTick=now;
  }catch(e){this.s.event('error',e.message);}finally{this.busy=false;}}
- transitionToken(t,rules,now,authors,budget=null){const reserved=budget?.reserved??this.s.all('token').reduce((sum,t)=>sum+(t.xReservedCost??0),0);const next=transition({...t,cost:Math.max(0,t.cost-(t.xReservedCost??0))},rules,now,Math.max(0,(budget?.cost??this.s.cost())-reserved),authors);return {...next,cost:t.cost,xPauseReason:t.cost+10*rules.postPrice>rules.tokenBudget+1e-9?'单币 X 预算不足':(budget?.cost??this.s.cost())+10*rules.postPrice>rules.dailyBudget+1e-9?'今日 X 预算不足':null,...(inResearchWindow(t,now)?{status:t.status==='priority'?'priority':'observing',reason:'收录后 30 分钟完整观察（付费预算仍受限）'}:{})};}
+ transitionToken(t,rules,now,authors,budget=null){const reserved=budget?.reserved??this.s.all('token').reduce((sum,t)=>sum+(t.xReservedCost??0),0);const next=transition({...t,cost:Math.max(0,t.cost-(t.xReservedCost??0))},rules,now,Math.max(0,(budget?.cost??this.s.cost())-reserved),authors);return {...next,cost:t.cost,xPauseReason:t.cost+10*rules.postPrice>rules.tokenBudget+1e-9?'单币 X 预算不足':(budget?.cost??this.s.cost())+10*rules.postPrice>rules.dailyBudget+1e-9?'今日 X 预算不足':null,...(inResearchWindow(t,now)?{status:t.status==='priority'?'priority':'observing',reason:'收录后 60 分钟完整观察（付费预算仍受限）'}:{})};}
  async marketTick(){if(!this.running||this.marketBusy)return;this.marketBusy=true;try{const fast=Date.now()-this.lastMarket<30000;if(!fast)this.lastMarket=Date.now();await this.market(fast);if(this.running)this.analysis.shadowTick();}finally{this.marketBusy=false;}}
  async market(fast=false){
   const held=new Set(this.s.all('live-position').filter(p=>p.status==='open').map(p=>p.ca));
@@ -40,7 +40,7 @@ export class Worker {
    for(const t of batch){let p=matchingPair(direct,t)??matchingPair(pairs,t);const now=Date.now(),prev=this.s.get('token',t.ca);if((!p||!Number.isFinite(p.fdv)||!Number.isFinite(p.liquidity?.usd))&&t.source==='stonk'&&officialBudget>0&&now-(prev.stonkMarketAttemptAt??0)>=60000){officialBudget--;this.s.put('token',t.ca,{...prev,stonkMarketAttemptAt:now});prev.stonkMarketAttemptAt=now;try{p=await this.stonk.marketPair(t)??p;}catch{batchError=true;}}
     const valid=p&&Number.isFinite(p.fdv)&&p.fdv>=0&&Number.isFinite(p.liquidity?.usd)&&p.liquidity.usd>=0;
     const error=valid?null:batchError?'行情接口请求失败':p?'行情源缺少 FDV 或 LP':'行情源未返回迁移池';
-    if(error&&error!==prev.marketError)this.s.event('data',error+(inResearchWindow(t,now)?'；30 分钟观察期继续 X（预算内）':'；暂停该币 X 搜索'),t.ca);
+    if(error&&error!==prev.marketError)this.s.event('data',error+(inResearchWindow(t,now)?'；60 分钟观察期继续 X（预算内）':'；暂停该币 X 搜索'),t.ca);
     if(!valid){missing++;this.s.put('token',t.ca,{...this.s.get('token',t.ca),marketCheckedAt:now,marketError:error});continue;}
     const account=p.info?.socials?.find(s=>s.type==='twitter')?.url?.match(/^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/)?.[1]??null;
     const fdv=p.fdv,meaningful=prev.fdv>0&&fdv/prev.fdv>=1.05,authors=heat(this.s.posts(t.ca),t.ca,now).authors;

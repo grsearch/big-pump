@@ -6,9 +6,9 @@ import {newToken,transition,defaults} from '../lib/engine.ts';
 import {matchingPair} from '../backend/providers.mjs';
 const ca='2yiGo5LJURtichqMDMtRbiHXcXJhjHeHJkfYL3Hppump',pool='RrsXJC73sQ67MVxbwJj4ooJPVU3YjvTA4FQWCMV51k7';
 const pair=(extra={})=>({chainId:'solana',pairAddress:pool,baseToken:{address:ca,symbol:'POOP',name:'NASPOOP'},fdv:2223,liquidity:{usd:2232},priceUsd:'0.000002223',...extra});
-function setup(){const s=new Store(':memory:');const now=Date.now();const t=newToken(ca,pool,now-2400000,now-2400000);s.put('token',ca,t);const w=new Worker(s,{ENABLE_X:'true',X_BEARER_TOKEN:'test'});w.running=true;return {s,w,t};}
+function setup(){const s=new Store(':memory:');const now=Date.now();const t={...newToken(ca,pool,now-4200000,now-4200000),lastSignalAt:now};s.put('token',ca,t);const w=new Worker(s,{ENABLE_X:'true',X_BEARER_TOKEN:'test'});w.running=true;return {s,w,t};}
 
-test('fast market collection includes live holdings and first 30 minutes without Shadow',async()=>{
+test('fast market collection includes live holdings and first 60 minutes without Shadow',async()=>{
  const {s,w,t}=setup(),original=globalThis.fetch;let calls=0;
  globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify([pair()]));};
  try{
