@@ -26,7 +26,7 @@ test('Jupiter requests fixed 0.0003 SOL priority fee for buy and sell, without a
  assert.throws(()=>new Jupiter(s,{LIVE_PRIORITY_FEE_LAMPORTS:'-1'}));s.close();
 });
 test('live defaults to 15 percent, propagates it to quotes, respects overrides and rejects larger limits',async()=>{
- const f=setup();assert.equal(f.engine.slippageBps,1500);f.engine.control('start');f.s.put('token','coin',token());
+ const f=setup();assert.equal(f.engine.slippageBps,1500);f.engine.control('start');f.s.put('live-signal','coin',token());
  const original=f.jupiter.order,limits=[];f.jupiter.order=async(...args)=>{limits.push(args[5]);return original(...args);};await f.engine.tick(true);assert.deepEqual(limits,[1500,1500]);
  const smaller=new LiveTrading(f.s,{...f.env,LIVE_SLIPPAGE_BPS:'100'},null,{wallet:f.wallet,jupiter:f.jupiter});assert.equal(smaller.slippageBps,100);
  const invalid=new LiveTrading(f.s,{...f.env,LIVE_SLIPPAGE_BPS:'1501'},null,{wallet:f.wallet,jupiter:f.jupiter});assert(invalid.error);f.s.close();
@@ -35,11 +35,11 @@ test('live defaults to 15 percent, propagates it to quotes, respects overrides a
 });
 
 test('graduation event starts a quote immediately without a timer',async()=>{
- const f=setup();f.engine.control('start');f.s.put('token','coin',token());
+ const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());
  await f.engine.onGraduation(true);assert.equal(f.submitted(),1);f.s.close();
 });
 test('transient quote failure retries the same intent after restart, never duplicates a submission',async()=>{
- const f=setup();f.engine.control('start');f.s.put('token','coin',token());const order=f.jupiter.order;let first=true;
+ const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());const order=f.jupiter.order;let first=true;
  f.jupiter.order=async(...args)=>{if(first){first=false;throw Object.assign(Error('route pending'),{retryable:true});}return order(...args);};
  await f.engine.tick(true);assert.equal(f.s.all('live-order')[0].status,'retrying');
  const restarted=new LiveTrading(f.s,f.env,null,{wallet:f.wallet,jupiter:f.jupiter,clock:()=>now+1000});
@@ -47,7 +47,7 @@ test('transient quote failure retries the same intent after restart, never dupli
 });
 test('retry backoff, maximum attempts, pause and graduation deadline are enforced',async()=>{
  for(const mode of ['limit','pause','deadline']){
- const f=setup();f.engine.control('start');f.s.put('token','coin',token());f.jupiter.order=async()=>{throw Object.assign(Error('offline'),{retryable:true});};
+ const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());f.jupiter.order=async()=>{throw Object.assign(Error('offline'),{retryable:true});};
  await f.engine.tick(true);await f.engine.tick(true);assert.equal(f.s.all('live-order')[0].attempts,1);
  if(mode==='pause')f.engine.control('pause');
  if(mode==='deadline')f.clock(now+120001);
@@ -57,13 +57,13 @@ test('retry backoff, maximum attempts, pause and graduation deadline are enforce
  }
 });
 test('collector stop during quote prevents submission',async()=>{
- const f=setup();f.engine.control('start');f.s.put('token','coin',token());const order=f.jupiter.order;
+ const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());const order=f.jupiter.order;
  f.jupiter.order=async(...args)=>{await f.engine.tick(false);return order(...args);};
  await f.engine.onGraduation(true);assert.equal(f.submitted(),0);f.s.close();
 });
 test('routine exits alternate with new entries but triggered exits take priority',async()=>{
  for(const urgent of [false,true]){
- const f=setup();f.engine.control('start');f.s.put('token','coin',token());f.s.put('live-position','older',{ca:'older',status:'open',openedAt:now-10000,checkedAt:0,...(urgent?{exitReason:'exit'}:{})});
+ const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());f.s.put('live-position','older',{ca:'older',status:'open',openedAt:now-10000,checkedAt:0,...(urgent?{exitReason:'exit'}:{})});
  let checks=0;f.engine.checkExit=async()=>{checks++;};await f.engine.tick(true);
  assert.equal(f.submitted(),urgent?0:1);if(!urgent)await f.engine.tick(true);assert.equal(checks,1);f.s.close();
  }
@@ -100,7 +100,7 @@ test('quote validates exact input, mint, minimum output, fees and signer',()=>{
   for(const patch of [{inputMint:'wrong'},{outAmount:'0'},{otherAmountThreshold:'0'},{otherAmountThreshold:'980'},{inAmount:'1'},{slippageBps:200},{signatureFeeLamports:undefined},{taker:'other'},{transaction:''}])assert.throws(()=>validateOrder(quote(patch),expected));
 });
 test('default off cannot be armed or place orders even with injected wallet',async()=>{
-  const f=setup();f.engine.env={};f.s.put('token','coin',token());
+  const f=setup();f.engine.env={};f.s.put('live-signal','coin',token());
   assert.throws(()=>f.engine.control('start'));await f.engine.tick(true);assert.equal(f.submitted(),0);f.s.close();
 });
 test('wallet changes cannot silently take over an existing ledger',()=>{
@@ -109,7 +109,7 @@ test('wallet changes cannot silently take over an existing ledger',()=>{
   assert.throws(()=>another.control('start'),/账本不一致/);f.s.close();
 });
 test('C uses 0.1 SOL, probes reverse route, persists intent before send, never assumes a fill',async()=>{
-  const f=setup();f.engine.control('start');f.s.put('token','coin',token());
+  const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());
   await f.engine.tick(true);assert.equal(f.submitted(),1);assert.deepEqual(f.calls,['buy','buy']);
   assert.equal(f.s.all('live-order')[0].inputAmount,'100000000');assert.equal(f.s.all('live-position').length,0);
   assert(!JSON.stringify(f.engine.snapshot()).includes('never-broadcast'));
@@ -117,32 +117,32 @@ test('C uses 0.1 SOL, probes reverse route, persists intent before send, never a
 });
 test('C rejects old/future graduations, unverified migration and failed program admission',async()=>{
  for(const patch of [{graduatedAt:now-1},{graduatedAt:now+1},{source:'pump'},{migrationVerified:false},{creationVerified:false},{createdAt:now-1200001}]){
- const f=setup();f.engine.control('start');f.s.put('token','coin',token(patch));await f.engine.tick(true);assert.equal(f.submitted(),0);f.s.close();
+ const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token(patch));await f.engine.tick(true);assert.equal(f.submitted(),0);f.s.close();
  }
 });
 test('C does not require X, FDV or Shadow models when Jupiter validates the real route',async()=>{
- const f=setup();f.engine.control('start');f.s.put('token','coin',token({xObservations:[],fdv:null,lp:null,shadowBlocked:'UI model unavailable'}));await f.engine.tick(true);assert.equal(f.submitted(),1);assert.equal(f.s.all('live-order')[0].strategy,LIVE_C);f.s.close();
+ const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token({xObservations:[],fdv:null,lp:null,shadowBlocked:'UI model unavailable'}));await f.engine.tick(true);assert.equal(f.submitted(),1);assert.equal(f.s.all('live-order')[0].strategy,LIVE_C);f.s.close();
 });
 test('C exits at 40 percent activation, 10 percent drawdown and 30 minutes',()=>{
  const p={strategy:LIVE_C,costLamports:100,openedAt:now,highLamports:0};assert.equal(exitReason(p,139,now),null);assert(!p.trailingActive);assert.equal(exitReason(p,140,now),null);assert(p.trailingActive);assert.equal(exitReason(p,127,now),null);assert.match(exitReason(p,126,now),/10%/);
- assert.equal(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1799999),'固定止损 -30%');assert.match(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1800000),/30 分钟/);
+ assert.equal(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1799999),null);assert.match(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1800000),/30 分钟/);
 });
 test('upgrading enabled A pauses new entries without deleting positions or pending orders',()=>{
  const f=setup();f.s.put('config','live-trading',{acceptEntries:true,wallet:'wallet',startedAt:now});f.s.put('live-position','old',{ca:'old',status:'open'});f.s.put('live-order','old-order',{id:'old-order',status:'confirming'});
  const engine=new LiveTrading(f.s,f.env,null,{wallet:f.wallet,jupiter:f.jupiter,clock:()=>now});assert.equal(engine.state().acceptEntries,false);assert.equal(f.s.all('live-position').length,1);assert.equal(f.s.all('live-order').length,1);f.s.close();
 });
 test('reverse route failure skips buy and never signs',async()=>{
-  const f=setup();f.engine.control('start');f.s.put('token','coin',token());
+  const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());
   f.jupiter.order=async(input)=>{if(input!==SOL)throw Error('无卖出路由');return quote();};
   await f.engine.tick(true);assert.equal(f.submitted(),0);assert.match(f.s.all('live-order')[0].reason,/无卖出路由/);f.s.close();
 });
 test('pause while quote is in flight cancels entry',async()=>{
-  const f=setup();f.engine.control('start');f.s.put('token','coin',token());
+  const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());
   f.jupiter.order=async()=>{f.engine.control('pause');return quote();};await f.engine.tick(true);
   assert.equal(f.submitted(),0);f.s.close();
 });
 test('uncertain submission survives restart without duplicate buy; receipt is applied once',async()=>{
-  const f=setup();f.engine.control('start');f.s.put('token','coin',token());await f.engine.tick(true);
+  const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());await f.engine.tick(true);
   const restarted=new LiveTrading(f.s,f.env,null,{wallet:f.wallet,jupiter:f.jupiter,clock:()=>now+10000});
   await restarted.tick(true);assert.equal(f.submitted(),1);assert.throws(()=>restarted.control('start'),/确认/);
   f.receipt({quantity:'997',solDelta:-102000000,at:now,failed:false});

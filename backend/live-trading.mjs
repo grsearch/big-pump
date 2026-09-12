@@ -5,11 +5,19 @@ import {LiveWallet} from './live-wallet.mjs';
 import {fastGraduation} from './stonk.mjs';
 import {ENTRY_POLICY} from './live-entry.mjs';
 export const LIVE_C='stonk-graduation-c-v1';
-export const C_EXIT_POLICY={version:'c-stop30-trail40-10-time30-v1',stopLossPct:30,trailingActivationPct:40,trailingDrawdownPct:10,maxHoldMinutes:30};
+export const C_EXIT_POLICY={version:'c-no-stop-trail40-10-time30-v2',stopLossPct:null,trailingActivationPct:40,trailingDrawdownPct:10,maxHoldMinutes:30};
 export function liveCEntry(t,state,now){return Number.isFinite(state.startedAt)&&t?.source==='stonk'&&t.migrationVerified===true&&t.creationVerified===true&&fastGraduation(t.createdAt,t.graduatedAt)&&t.graduatedAt>=state.startedAt&&t.graduatedAt<=now&&now-t.graduatedAt<=ENTRY_POLICY.windowMs;}
 
 export function migrateLiveExit(position) {
-  if(position.strategy===LIVE_C)return;
+  if(position.strategy===LIVE_C){
+    if(position.status==='closed')return;
+    // Already broadcast exits are reconciled before this path, never cancelled.
+    if(position.exitReason==='固定止损 -30%'){
+      position.supersededExit={reason:position.exitReason,at:position.exitTriggeredAt,evidence:position.exitTriggerEvidence,policy:position.exitPolicy};
+      position.exitReason=null;position.exitTriggeredAt=null;position.exitTriggerEvidence=null;
+    }
+    position.exitPolicy={...C_EXIT_POLICY};return;
+  }
   if(position.exitVersion==='trailing-100-20-v1'||position.status==='closed')return;
   position.trailingActive=(position.highLamports??0)>=position.costLamports*2;
   if(['固定止损 -15%','固定止盈 +50%','移动止盈（高点回撤 5%）'].includes(position.exitReason))position.exitReason=null;
@@ -20,7 +28,6 @@ export function exitReason(position, value, now) {
   position.highLamports = Math.max(position.highLamports ?? 0, value);
   if (value >= position.costLamports * (position.strategy===LIVE_C?1.4:2)) position.trailingActive = true;
   if (now - position.openedAt >= 1800000) return '最大持仓时间 30 分钟';
-  if (position.strategy===LIVE_C && value <= position.costLamports * .7) return '固定止损 -30%';
   if (position.trailingActive && value <= position.highLamports * (position.strategy===LIVE_C ? .9 : .8)) return position.strategy===LIVE_C?'移动止盈（高点回撤 10%）':'移动止盈（高点回撤 20%）';
   return null;
 }
@@ -90,8 +97,8 @@ export class LiveTrading {
       const pending = this.s.statusRows('live-order','confirming');
       const due = positions.filter(p => !pending.some(o => o.ca === p.ca) && now - (p.checkedAt ?? 0) >= 5000).sort((a,b) => (a.checkedAt ?? 0) - (b.checkedAt ?? 0));
       const state = this.state();
-      for(const o of this.s.statusRows('live-order','retrying'))if(!collectorRunning||!state.acceptEntries||!liveCEntry(this.s.get('token',o.ca),state,now))this.s.put('live-order',o.id,{...o,status:'skipped',reason:'已暂停或毕业买入窗口超过 20 秒'});
-      const candidates=collectorRunning&&state.acceptEntries&&!pending.length?this.s.entryTokens(now-ENTRY_POLICY.windowMs,now).filter(t=>{
+      for(const o of this.s.statusRows('live-order','retrying'))if(!collectorRunning||!state.acceptEntries||!liveCEntry(this.s.get('live-signal',o.ca),state,now))this.s.put('live-order',o.id,{...o,status:'skipped',reason:'已暂停或毕业买入窗口超过 20 秒'});
+      const candidates=collectorRunning&&state.acceptEntries&&!pending.length?this.s.entrySignals(now-ENTRY_POLICY.windowMs,now).filter(t=>{
         if (this.s.get('live-position', t.ca)) return false;
         if(!liveCEntry(t,state,now))return false;
         const order=this.s.get('live-order','buy:'+t.ca+':'+t.graduatedAt);
@@ -111,7 +118,7 @@ export class LiveTrading {
     const id = 'buy:' + t.ca + ':' + observation.at;
     const previous=this.s.get('live-order',id),attempts=(previous?.attempts??0)+1;
     const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, strategy:LIVE_C, exitPolicy:{...C_EXIT_POLICY}, quoteMint:t.quoteMint??null, quoteSymbol:t.quoteSymbol??null, side:'buy', at:this.clock(), signalAt:observation.at,
-      detectedAt:t.enrolledAt,entryPolicy:ENTRY_POLICY,entryTiming:{discoveryDelayMs:t.enrolledAt-t.graduatedAt,remainingMs:Math.max(0,t.graduatedAt+ENTRY_POLICY.windowMs-this.clock())},attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
+      detectedAt:t.verifiedAt,verifiedAt:t.verifiedAt,signalReceivedAt:this.clock(),entryPolicy:ENTRY_POLICY,entryTiming:{discoveryDelayMs:t.verifiedAt-t.graduatedAt,remainingMs:Math.max(0,t.graduatedAt+ENTRY_POLICY.windowMs-this.clock())},attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
     this.s.put('live-order', id, intent);
     try {
       const q = await this.jup.order(SOL, t.ca, BUY_LAMPORTS, 'buy', this.wallet.address, this.slippageBps);
@@ -119,7 +126,7 @@ export class LiveTrading {
       // Probe the reverse route before signing, not a guarantee of future liquidity.
       const reverse=await this.jup.order(t.ca, SOL, q.otherAmountThreshold, 'buy', undefined, this.slippageBps);
       intent.reverseQuoteAt=this.clock();intent.reverseQuoteTiming=reverse.timing;
-      const current = this.s.get('token', t.ca);
+      const current = this.s.get('live-signal', t.ca);
       if (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(current,this.state(),this.clock())) throw Error('签名前入场条件失效');
       await this.submit(intent, q);
     } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming'){
@@ -140,8 +147,10 @@ export class LiveTrading {
     this.exitLocks.add(position.ca);try{return await this.checkExitInner(fresh??position);}finally{this.exitLocks.delete(position.ca);}
   }
   async checkExitInner(position) {
+    if(position.strategy===LIVE_C&&position.exitReason==='固定止损 -30%'){
+      for(const order of this.s.statusRows('live-order','preparing'))if(order.ca===position.ca&&order.side==='sell'&&order.reason==='固定止损 -30%')this.s.put('live-order',order.id,{...order,status:'cancelled',reason:'策略更新：取消尚未发送的固定止损卖单'});
+    }
     migrateLiveExit(position);
-    if(position.strategy===LIVE_C)position.exitPolicy={...C_EXIT_POLICY};
     if (this.clock() - position.openedAt >= 1800000) position.exitReason ??= '最大持仓时间 30 分钟';
     position.checkedAt = this.clock(); this.s.put('live-position', position.ca, position);
     try {
@@ -163,7 +172,7 @@ export class LiveTrading {
     intent.route=quotedRoute(quote);
     intent.prepareStartedAt=this.clock();
     const signed = await this.wallet.prepare(quote, intent.side, this.maxFeeLamports);
-    if (intent.side === 'buy' && (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(this.s.get('token',intent.ca),this.state(),this.clock()))) throw Error('签名后入场已暂停或过期');
+    if (intent.side === 'buy' && (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(this.s.get('live-signal',intent.ca),this.state(),this.clock()))) throw Error('签名后入场已暂停或过期');
     const order = {...intent, preparedAt:this.clock(), ...signed, requestId:quote.requestId, lastValidBlockHeight:quote.lastValidBlockHeight, status:'confirming', quoteAt:quote.receivedAt, quotedOut:quote.outAmount, minimumOut:quote.otherAmountThreshold};
     // Persist before any broadcast. A crash from here never causes automatic resubmission.
     this.s.put('live-order', order.id, order);

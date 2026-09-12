@@ -1,6 +1,8 @@
 import {quoteFields,enrichMetadata} from './stonk-metadata.mjs';
 import {createHash} from 'node:crypto';
 import {jsonFetch} from './providers.mjs';
+import {setImmediate as yieldTurn} from 'node:timers/promises';
+import {newToken} from '../lib/engine.ts';
 
 export const LAUNCHLAB='LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj';
 export const CPMM='CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
@@ -96,13 +98,33 @@ export class StonkDiscovery{
    this.s.put('stonk-exclusion',found.ca,{ca:found.ca,createdAt,graduatedAt:found.graduatedAt,reason:'创建至毕业超过 20 分钟，或时间无效'});
    this.s.event('filter','未入监控：创建至毕业超过 20 分钟，或时间无效',found.ca);return true;
   }
-  this.enroll({...found,createdAt,creationVerified:true,creationSignature:c.signature,creator:c.creator,creatorVerified:c.creatorVerified,creationTimeSource:'链上 LaunchLab 初始化'},signature);return true;
+  await this.enroll({...found,createdAt,creationVerified:true,creationSignature:c.signature,creator:c.creator,creatorVerified:c.creatorVerified,creationTimeSource:'链上 LaunchLab 初始化'},signature);return true;
  }
- enroll(found,signature){if(!found.creationVerified||!fastGraduation(found.createdAt,found.graduatedAt)||this.s.get('token',found.ca))return;const c=this.s.get('stonk-candidate',found.ca);this.w.enroll(found,null);const t=this.s.get('token',found.ca);if(!t)return;this.s.put('token',found.ca,{...t,...found,migrationSignature:signature,...(c?this.metadata(c,found):{}),smartCoverage:'按实际余额变化统计；缺少历史汇率的样本不验证',shadowBlocked:'等待链上税费与计价资产行情'});this.s.event('migration','Stonk 链上迁移已验证 · 创建后 20 分钟内毕业',found.ca);this.w.onGraduation?.();this.w.analysis.shadowTick();}
+ async enroll(found,signature){
+  if(found.source!=='stonk'||!found.migrationVerified||!found.creationVerified||!fastGraduation(found.createdAt,found.graduatedAt)||this.s.get('token',found.ca))return;
+  // Durable, minimal outbox first. No observation record or metadata is required
+  // by the signer. A lost IPC notification is recovered by its one-second tick.
+  let signal=this.s.get('live-signal',found.ca);
+  if(!signal){signal={...found,migrationSignature:signature,verifiedAt:Date.now(),observationPending:true};this.s.put('live-signal',found.ca,signal);}
+  this.w.onGraduation?.();
+  await yieldTurn();
+  this.materializeObservation(signal);
+ }
+ materializeObservation(signal){
+  if(!signal.observationPending)return;
+  if(!this.s.get('token',signal.ca)&&Date.now()-signal.graduatedAt<86400000){
+   const c=this.s.get('stonk-candidate',signal.ca);
+   const {observationPending,...found}=signal;
+   this.s.put('token',signal.ca,{...newToken(signal.ca,signal.pool,signal.graduatedAt,Date.now()),...found,...(c?this.metadata(c,signal):{}),smartCoverage:'按实际余额变化统计；缺少历史汇率的样本不验证',shadowBlocked:'等待链上税费与计价资产行情'});
+   this.s.event('migration','Stonk 链上迁移已验证 · 创建后 20 分钟内毕业',signal.ca);
+  }
+  this.s.put('live-signal',signal.ca,{...signal,observationPending:false,observedAt:Date.now()});
+ }
+ recoverObservation(){const row=this.s.db.prepare("SELECT data FROM records WHERE kind='live-signal' AND json_extract(data,'$.observationPending')=1 LIMIT 1").get();if(row)this.materializeObservation(JSON.parse(row.data));}
  metadata(c,t){return enrichMetadata(c,t); }
  async pollPage(page){const j=await jsonFetch('https://www.stonkfun.xyz/api/public/v1/tokens?status=graduated&sort=newest&pageSize=100&page='+page);if(!Array.isArray(j.data?.tokens))throw Error('Stonk 响应格式无效');for(const row of j.data.tokens){const c=stonkCandidate(row);if(!c)continue;const old=this.s.get('stonk-candidate',c.ca);if(!old&&!fastGraduation(c.createdAt,c.reportedGraduatedAt))this.s.event('filter','官方创建时间异常或超时，保留候选等待链上复核',c.ca);this.s.put('stonk-candidate',c.ca,{...old,...c,seenAt:Date.now()});const t=this.s.get('token',c.ca);if(t?.source==='stonk'){this.s.put('token',c.ca,{...t,...this.metadata(c,t)});}}
  return Math.max(1,Number(j.data?.pagination?.totalPages)||1);}
- async tick(){if(this.busy)return;this.busy=true;try{await this.run();}finally{this.busy=false;}}
+ async tick(){if(this.busy)return;this.busy=true;try{await yieldTurn();try{this.recoverObservation();this.observationError=null;}catch{this.observationError='观察记录待重试';}await this.run();}finally{this.busy=false;}}
  async run(){if(!this.enabled()){this.status='未开启';return;}if(!this.w.rpc){this.status='需要 Helius 核验迁移';return;}const now=Date.now();
   if(now>=this.nextPoll){this.nextPoll=now+60000;try{const pages=await this.pollPage(1);const cursor=this.s.get('config','stonk-pages')?.page??2;if(pages>1)await this.pollPage(Math.min(cursor,pages));this.s.put('config','stonk-pages',{page:cursor>=pages?2:cursor+1});this.status='已连接 · 毕业候选等待链上核验';}catch(e){this.nextPoll=now+Math.max(60000,(e.retryAfter??60)*1000);this.status='Stonk 列表请求失败，稍后重试';}}
   if(now<this.nextVerify)return;this.nextVerify=now+5000;

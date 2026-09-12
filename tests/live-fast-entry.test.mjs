@@ -9,11 +9,11 @@ function setup(){
  const wallet={address:'wallet',prepare:async()=>({signature:'fake',signedTransaction:'fake'}),execute:async()=>{sends++;return {message:'mock'};},receipt:async()=>null};
  const jupiter={status:()=>({}),order:async()=>({otherAmountThreshold:'1000',outAmount:'1100',receivedAt:at,requestId:'mock'})};
  const e=new LiveTrading(s,{ENABLE_LIVE_TRADING:'true'},null,{wallet,jupiter,clock:()=>at});e.control('start');
- const t={ca:'coin',source:'stonk',migrationVerified:true,creationVerified:true,createdAt:now-60000,graduatedAt:now,enrolledAt:now,status:'observing',priceUsd:100,marketAt:now,history:[{at:now,priceUsd:1}]};s.put('token',t.ca,t);
+ const t={ca:'coin',source:'stonk',migrationVerified:true,creationVerified:true,createdAt:now-60000,graduatedAt:now,verifiedAt:now,status:'observing',priceUsd:100,marketAt:now,history:[{at:now,priceUsd:1}]};s.put('live-signal',t.ca,t);
  return {s,e,t,wallet,jupiter,set:n=>at=n,sends:()=>sends};
 }
 test('20 second deadline uses migration, not detection, with no price-rise cap',async()=>{
- const f=setup();try{assert(liveCEntry(f.t,f.e.state(),now+20000));assert(!liveCEntry({...f.t,enrolledAt:now+19000},f.e.state(),now+20001));assert.equal(ENTRY_POLICY.maxRisePct,undefined);await f.e.tick(true);assert.equal(f.sends(),1);}finally{f.s.close();}
+ const f=setup();try{assert(liveCEntry(f.t,f.e.state(),now+20000));assert(!liveCEntry({...f.t,verifiedAt:now+19000},f.e.state(),now+20001));assert.equal(ENTRY_POLICY.maxRisePct,undefined);await f.e.tick(true);assert.equal(f.sends(),1);}finally{f.s.close();}
 });
 test('fast retry intervals and six-attempt limit remain bounded',async()=>{
  const f=setup();try{

@@ -26,7 +26,7 @@ export default function LivePanel({data,demo,online,busy,act}:any) {
   const pages=Math.max(1,Math.ceil(records.length/20)),currentPage=Math.min(page,pages),rows=records.slice((currentPage-1)*20,currentPage*20);
   const labels:Record<string,string>={retrying:'等待快速重试',preparing:'核验报价',confirming:'等待链上核对',confirmed:'已确认',failed:'链上失败',skipped:'已跳过'};
   return <><div className="section-intro"><h2>C · Stonk 毕业即买 · 实盘</h2><p>每次 0.1 SOL，Stonk 使用 Jupiter 路由。使用 Jupiter 即时报价，取消本程序额外的链上模拟；不要求 X 热度或 FDV 门槛，不继承 Shadow 持仓或历史信号。旧 A 记录保留，旧持仓仍按原规则管理。</p></div>
-    <div className="notice">{live?.acceptEntries?'新开仓已启用':'新开仓关闭'} · {live?.enabled?'服务器允许实盘':'服务器实盘开关关闭'} · {live?.configured?'钱包已配置':'钱包未就绪'}<br/>+40% 激活移动止盈，回撤 10% 全仓退出；固定止损 −30%，无固定止盈，最长持仓 30 分钟。阈值依据扣费后的卖出报价，成交金额可能不同。</div>
+    <div className="notice">{live?.acceptEntries?'新开仓已启用':'新开仓关闭'} · {live?.enabled?'服务器允许实盘':'服务器实盘开关关闭'} · {live?.configured?'钱包已配置':'钱包未就绪'}<br/>+40% 激活移动止盈，回撤 10% 全仓退出；无固定止损、无固定止盈，最长持仓 30 分钟。阈值依据扣费后的卖出报价，成交金额可能不同。</div>
     <details className="panel live-settings"><summary className="panel-head"><h2>运行设置与控制</h2><span>Jupiter {live?.jupiter?.plan??'Developer'} · {live?.jupiter?.usedThisSecond??0} / {live?.jupiter?.requestsPerSecond??10} 次 / 秒 · {live?.jupiter?.used??0} / {live?.jupiter?.limit??600} 次 / 分钟</span></summary><div className="detail-box">
       <p>钱包：{live?.wallet?<a href={'https://gmgn.ai/sol/address/'+live.wallet} target="_blank" rel="noreferrer">{live.wallet} ↗</a>:'尚未配置'}</p>
       <p>单笔滑点上限 {(live?.slippageBps??1500)/100}% · 固定优先费 {sol(live?.jupiter?.priorityFeeLamports??300000)} · 网络费用和租金上限 {sol(live?.maxFeeLamports??5000000)}（不含 0.1 SOL 买入本金）</p>

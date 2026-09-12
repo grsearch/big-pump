@@ -42,7 +42,7 @@ test('headers timeout then body timeout recover on third attempt, same order and
   const wallet={address:'wallet',prepare:async()=>({signature:'mock',signedTransaction:'mock'}),execute:async()=>{sends++;return {message:'mock'};},receipt:async()=>null};
   const env={ENABLE_LIVE_TRADING:'true'};
   let e=new LiveTrading(s,env,null,{wallet,jupiter:j,clock:()=>at});e.control('start');
-  s.put('token','coin',{ca:'coin',source:'stonk',migrationVerified:true,creationVerified:true,createdAt:now-60000,graduatedAt:now,enrolledAt:now,status:'observing'});
+  s.put('live-signal','coin',{ca:'coin',source:'stonk',migrationVerified:true,creationVerified:true,createdAt:now-60000,graduatedAt:now,verifiedAt:now,status:'observing'});
   await e.tick(true);let o=s.all('live-order')[0];assert.equal(o.status,'retrying');assert.equal(o.diagnostic.phase,'headers');
   at=o.nextAttemptAt;e=new LiveTrading(s,env,null,{wallet,jupiter:j,clock:()=>at});await e.tick(true);
   o=s.all('live-order')[0];assert.equal(o.status,'retrying');assert.equal(o.attempts,2);assert.equal(o.diagnostic.phase,'body');
