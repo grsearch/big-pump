@@ -30,8 +30,8 @@ export class Worker {
  transitionToken(t,rules,now,authors,budget=null){const reserved=budget?.reserved??this.s.all('token').reduce((sum,t)=>sum+(t.xReservedCost??0),0);const next=transition({...t,cost:Math.max(0,t.cost-(t.xReservedCost??0))},rules,now,Math.max(0,(budget?.cost??this.s.cost())-reserved),authors);return {...next,cost:t.cost,xPauseReason:t.cost+10*rules.postPrice>rules.tokenBudget+1e-9?'单币 X 预算不足':(budget?.cost??this.s.cost())+10*rules.postPrice>rules.dailyBudget+1e-9?'今日 X 预算不足':null,...(inResearchWindow(t,now)?{status:t.status==='priority'?'priority':'observing',reason:'收录后 30 分钟完整观察（付费预算仍受限）'}:{})};}
  async marketTick(){if(!this.running||this.marketBusy)return;this.marketBusy=true;try{const fast=Date.now()-this.lastMarket<30000;if(!fast)this.lastMarket=Date.now();await this.market(fast);if(this.running)this.analysis.shadowTick();}finally{this.marketBusy=false;}}
  async market(fast=false){
-  const active=this.s.get('config','shadow-active'),run=active&&this.s.get('shadow-run',active.id);
-  const held=new Set((run?.arms??[]).flatMap(a=>a.positions.filter(p=>['open','pending'].includes(p.status)).map(p=>p.ca)));
+  const held=new Set(this.s.all('live-position').filter(p=>p.status==='open').map(p=>p.ca));
+  for(const t of this.s.all('token'))if(inResearchWindow(t,Date.now()))held.add(t.ca);
   const all=this.s.all('token');const list=fast?all.filter(t=>held.has(t.ca)&&Date.now()-(t.marketCheckedAt??0)>=5000).sort((a,b)=>(a.marketCheckedAt??0)-(b.marketCheckedAt??0)).slice(0,30):all.filter(t=>held.has(t.ca)||(t.status!=='archived'&&(t.status!=='sleeping'||!t.marketCheckedAt||Date.now()-t.marketCheckedAt>=120000)));if(!list.length)return;
   let updated=0,missing=0,officialBudget=2;
   for(let i=0;i<list.length;i+=30){const batch=list.slice(i,i+30);let pairs=[],batchError=false;try{pairs=await dexBatch(batch);if(!Array.isArray(pairs))throw Error('invalid');}catch{pairs=[];batchError=true;}

@@ -7,6 +7,20 @@ import {matchingPair} from '../backend/providers.mjs';
 const ca='2yiGo5LJURtichqMDMtRbiHXcXJhjHeHJkfYL3Hppump',pool='RrsXJC73sQ67MVxbwJj4ooJPVU3YjvTA4FQWCMV51k7';
 const pair=(extra={})=>({chainId:'solana',pairAddress:pool,baseToken:{address:ca,symbol:'POOP',name:'NASPOOP'},fdv:2223,liquidity:{usd:2232},priceUsd:'0.000002223',...extra});
 function setup(){const s=new Store(':memory:');const now=Date.now();const t=newToken(ca,pool,now-2400000,now-2400000);s.put('token',ca,t);const w=new Worker(s,{ENABLE_X:'true',X_BEARER_TOKEN:'test'});w.running=true;return {s,w,t};}
+
+test('fast market collection includes live holdings and first 30 minutes without Shadow',async()=>{
+ const {s,w,t}=setup(),original=globalThis.fetch;let calls=0;
+ globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify([pair()]));};
+ try{
+ await w.market(true);assert.equal(calls,0);
+ s.put('token',ca,{...t,enrolledAt:Date.now()-60000});await w.market(true);assert.equal(calls,1);assert.equal(s.get('token',ca).fdv,2223);
+ await w.market(true);assert.equal(calls,1);
+ s.put('token',ca,{...t,status:'sleeping',marketCheckedAt:Date.now()-6000});s.put('live-position',ca,{ca,status:'open'});
+ await w.market(true);assert.equal(calls,2);
+ s.put('live-position',ca,{ca,status:'closed'});s.put('token',ca,{...t,marketCheckedAt:Date.now()-6000});
+ await w.market(true);assert.equal(calls,2);
+ }finally{globalThis.fetch=original;s.close();}
+});
 test('old bonding curve response falls back to exact migrated pool and stops X below threshold',async()=>{const {s,w}=setup(),original=globalThis.fetch;let direct=0,x=0;globalThis.fetch=async url=>{if(String(url).includes('api.x.com')){x++;throw Error('unexpected X');}if(String(url).includes('/latest/dex/pairs/')){direct++;return new Response(JSON.stringify({pairs:[pair()]}));}return new Response(JSON.stringify([pair({pairAddress:'old-bonding-curve',fdv:40977,liquidity:null})]));};try{await w.market();assert.equal(s.get('token',ca).fdv,2223);assert.equal(s.get('token',ca).symbol,'POOP');assert.equal(s.get('token',ca).marketError,null);await w.xPoll();assert.equal(x,0);assert.equal(s.cost(),0);await w.market();assert.equal(direct,2);assert.equal(s.get('token',ca).marketError,null);s.put('token',ca,{...s.get('token',ca),lowSince:Date.now()-181000});await w.market();assert.equal(s.get('token',ca).status,'sleeping');}finally{globalThis.fetch=original;s.close();}});
 test('pool matching rejects another chain, CA, or pool',()=>{const t={ca,pool};assert.equal(matchingPair([pair({chainId:'ethereum'})],t),undefined);assert.equal(matchingPair([pair({baseToken:{address:'different'}})],t),undefined);assert.equal(matchingPair([pair({pairAddress:'another'})],t),undefined);});
 test('absent market is explicit, blocks X and enters data sleep after five minutes',async()=>{const {s,w,t}=setup(),original=globalThis.fetch;globalThis.fetch=async url=>{assert(!String(url).includes('api.x.com'));return new Response(JSON.stringify(String(url).includes('/latest/')?{pairs:[]}:[]));};try{await w.market();assert.equal(s.get('token',ca).marketError,'行情源未返回迁移池');await w.xPoll();assert.equal(s.cost(),0);const n=transition(s.get('token',ca),defaults,Date.now(),0,0);assert.equal(n.status,'sleeping');assert.match(n.reason,/行情缺失/);const recovered=transition({...n,marketError:null,fdv:30000,marketAt:Date.now()},defaults,Date.now(),0,0);assert.equal(recovered.status,'observing');}finally{globalThis.fetch=original;s.close();}});
