@@ -86,12 +86,12 @@ export class LiveTrading {
     try {
       await this.reconcile();
       const now = this.clock();
-      const positions = this.s.all('live-position').filter(p => p.status === 'open');
-      const pending = this.s.all('live-order').filter(o => o.status === 'confirming');
+      const positions = this.s.statusRows('live-position','open');
+      const pending = this.s.statusRows('live-order','confirming');
       const due = positions.filter(p => !pending.some(o => o.ca === p.ca) && now - (p.checkedAt ?? 0) >= 5000).sort((a,b) => (a.checkedAt ?? 0) - (b.checkedAt ?? 0));
       const state = this.state();
-      for(const o of this.s.all('live-order').filter(o=>o.status==='retrying'))if(!collectorRunning||!state.acceptEntries||!liveCEntry(this.s.get('token',o.ca),state,now))this.s.put('live-order',o.id,{...o,status:'skipped',reason:'已暂停或毕业买入窗口超过 20 秒'});
-      const candidates=collectorRunning&&state.acceptEntries&&!pending.length?this.s.all('token').filter(t=>{
+      for(const o of this.s.statusRows('live-order','retrying'))if(!collectorRunning||!state.acceptEntries||!liveCEntry(this.s.get('token',o.ca),state,now))this.s.put('live-order',o.id,{...o,status:'skipped',reason:'已暂停或毕业买入窗口超过 20 秒'});
+      const candidates=collectorRunning&&state.acceptEntries&&!pending.length?this.s.entryTokens(now-ENTRY_POLICY.windowMs,now).filter(t=>{
         if (this.s.get('live-position', t.ca)) return false;
         if(!liveCEntry(t,state,now))return false;
         const order=this.s.get('live-order','buy:'+t.ca+':'+t.graduatedAt);
@@ -124,18 +124,18 @@ export class LiveTrading {
       await this.submit(intent, q);
     } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming'){
       const nextAttemptAt=Math.max(this.clock()+[300,600,1000][Math.min(2,attempts-1)],e.retryAt??0);
-      const retry=e.retryable===true&&attempts<ENTRY_POLICY.maxAttempts&&this.collectorRunning!==false&&this.state().acceptEntries&&nextAttemptAt<=observation.at+ENTRY_POLICY.windowMs;
+      const retry=(e.retryable===true||[5,6].includes(e.errcode))&&attempts<ENTRY_POLICY.maxAttempts&&this.collectorRunning!==false&&this.state().acceptEntries&&nextAttemptAt<=observation.at+ENTRY_POLICY.windowMs;
       this.s.put('live-order', id, {...intent,status:retry?'retrying':'skipped',nextAttemptAt:retry?nextAttemptAt:null,reason:e.message,diagnostic:e.diagnostic??null});
       if(retry)this.scheduleRetry(nextAttemptAt);
     }}
   }
   async exitTick(){
     if(this.exitLaneBusy||!this.wallet||this.error||this.env.ENABLE_LIVE_TRADING!=='true')return;
-    this.exitLaneBusy=true;try{const pending=this.s.all('live-order').filter(o=>o.status==='confirming');const now=this.clock();const due=this.s.all('live-position').filter(p=>p.status==='open'&&!pending.some(o=>o.ca===p.ca)&&now-(p.checkedAt??0)>=5000).sort((a,b)=>Number(!!b.exitReason)-Number(!!a.exitReason)||(a.checkedAt??0)-(b.checkedAt??0));if(due[0])await this.checkExit(due[0]);}finally{this.exitLaneBusy=false;}
+    this.exitLaneBusy=true;try{const pending=this.s.statusRows('live-order','confirming');const now=this.clock();const due=this.s.statusRows('live-position','open').filter(p=>!pending.some(o=>o.ca===p.ca)&&now-(p.checkedAt??0)>=5000).sort((a,b)=>Number(!!b.exitReason)-Number(!!a.exitReason)||(a.checkedAt??0)-(b.checkedAt??0));if(due[0])await this.checkExit(due[0]);}finally{this.exitLaneBusy=false;}
   }
   async checkExit(position) {
     this.exitLocks??=new Set();if(this.exitLocks.has(position.ca))return;
-    if(this.s.all('live-order').some(o=>o.ca===position.ca&&o.status==='confirming'))return;
+    if(this.s.statusRows('live-order','confirming').some(o=>o.ca===position.ca))return;
     const fresh=this.s.get('live-position',position.ca);if(fresh&&fresh.status!=='open')return;
     this.exitLocks.add(position.ca);try{return await this.checkExitInner(fresh??position);}finally{this.exitLocks.delete(position.ca);}
   }
@@ -173,7 +173,7 @@ export class LiveTrading {
     this.s.put('live-order', order.id, {...latest,executeReturnedAt:this.clock(),...(latest.status==='confirming'?{reason:result.message,exitReason:intent.reason}:{})});
   }
   async reconcile() {
-    for (const order of this.s.all('live-order').filter(o => o.status === 'confirming')) {
+    for (const order of this.s.statusRows('live-order','confirming')) {
       if (this.clock() - (order.reconciledAt ?? 0) < 5000) continue;
       order.reconciledAt = this.clock(); this.s.put('live-order', order.id, order);
       let receipt;
