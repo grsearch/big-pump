@@ -19,7 +19,7 @@ export function decodeStonkCreation(tx,now=Date.now()){
   const data=decode58(ix.data);if(!data||!initializers.some(d=>data.subarray(0,8).equals(d)))continue;
   const a=(ix.accounts??[]).map(x=>typeof x==='number'?keys[x]:x);
   if(a.length<15||!STONK_CONFIGS.includes(a[3])||![a[5],a[6],a[7]].every(address))continue;
-  return {ca:a[6],curvePool:a[5],quoteMint:a[7],platformConfig:a[3],createdAt:tx.blockTime*1000,creationVerified:true};
+  return {ca:a[6],curvePool:a[5],quoteMint:a[7],platformConfig:a[3],createdAt:tx.blockTime*1000,creationVerified:true,creator:address(a[1])?a[1]:null,creatorVerified:address(a[1])};
  }return null;
 }
 function decode58(s){if(typeof s!=='string'||s.length>4096)return null;let n=0n;for(const c of s){const i='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'.indexOf(c);if(i<0)return null;n=n*58n+BigInt(i);}let h=n.toString(16);if(h.length%2)h='0'+h;return Buffer.concat([Buffer.alloc(s.match(/^1*/)[0].length),n?Buffer.from(h,'hex'):Buffer.alloc(0)]);}
@@ -95,7 +95,7 @@ export class StonkDiscovery{
    this.s.put('stonk-exclusion',found.ca,{ca:found.ca,createdAt,graduatedAt:found.graduatedAt,reason:'创建至毕业超过 20 分钟，或时间无效'});
    this.s.event('filter','未入监控：创建至毕业超过 20 分钟，或时间无效',found.ca);return true;
   }
-  this.enroll({...found,createdAt,creationVerified:true,creationSignature:c.signature,creationTimeSource:'链上 LaunchLab 初始化'},signature);return true;
+  this.enroll({...found,createdAt,creationVerified:true,creationSignature:c.signature,creator:c.creator,creatorVerified:c.creatorVerified,creationTimeSource:'链上 LaunchLab 初始化'},signature);return true;
  }
  enroll(found,signature){if(!found.creationVerified||!fastGraduation(found.createdAt,found.graduatedAt)||this.s.get('token',found.ca))return;const c=this.s.get('stonk-candidate',found.ca);this.w.enroll(found,null);const t=this.s.get('token',found.ca);if(!t)return;this.s.put('token',found.ca,{...t,...found,migrationSignature:signature,...(c?this.metadata(c):{}),smartCoverage:'按实际余额变化统计；缺少历史汇率的样本不验证',shadowBlocked:'等待链上税费与计价资产行情'});this.s.event('migration','Stonk 链上迁移已验证 · 创建后 20 分钟内毕业',found.ca);this.w.onGraduation?.();this.w.analysis.shadowTick();}
  metadata(c){const x=c.links?.twitter?.match(/^https:\/\/(?:www\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/)?.[1];return {symbol:c.symbol??c.ca.slice(0,5),name:c.name??'Stonk',quoteMint:c.quoteMint,quoteSymbol:c.quoteSymbol,transferFeeBps:c.transferFeeBps,launchMode:c.mode,xAccount:x??null};}

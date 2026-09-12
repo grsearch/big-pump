@@ -66,14 +66,14 @@ test('scheduler caps boost pool, expires boost and respects absence of tradable 
   assert.equal(xSchedule(many,now,10000).filter(x=>x.interval===15000).length,5);
   assert.equal(xSchedule([token({enrolledAt:now-600000,xObservations:[obs(now,{authors:0})]})],now,10000)[0].interval,120000);
   assert.equal(xSchedule([token({enrolledAt:now-600000})],now,10000)[0].interval,60000);
-  assert.equal(xSchedule([token({fdv:9999})],now,10000).length,0);
+  assert.equal(xSchedule([token({fdv:9999,enrolledAt:now-1800001})],now,10000).length,0);
 });
 test('X is serialized and transient reserved budget does not prematurely sleep a token',async t=>{
   const s=new Store(':memory:'),w=new Worker(s,{X_BEARER_TOKEN:'test',ENABLE_X:'true'}),at=Date.now();w.running=true;
   const coin={...newToken('11111111111111111111111111111111','p',at-60000,at-60000),fdv:30000,lp:30000,marketAt:at};s.put('token',coin.ca,coin);
   let release,calls=0;const response=new Promise(resolve=>{release=resolve;});t.mock.method(globalThis,'fetch',async()=>{calls++;return response;});
   const first=w.xPoll();await w.xPoll();assert.equal(calls,1);
-  const reserved=s.get('token',coin.ca);assert.equal(reserved.cost,.5);assert.equal(w.transitionToken(reserved,s.rules(),Date.now(),0).status,'observing');
+  const reserved=s.get('token',coin.ca);assert.equal(reserved.cost,.05);assert.equal(w.transitionToken(reserved,s.rules(),Date.now(),0).status,'observing');
   release(Response.json({data:[]}));await first;assert.equal(s.get('token',coin.ca).xReservedCost,0);assert.equal(s.cost(),0);s.close();
 });
 test('new rule validation and defaults match requested exits',()=>{
@@ -81,7 +81,7 @@ test('new rule validation and defaults match requested exits',()=>{
   assert.throws(()=>validateDiffusionRules({...diffusionDefaults,takeProfit:.1}));
   assert.equal(shadowDefaults.maxHoldHours,6);
 });
-test('real X ingestion timestamps drive new Shadow signals without waiting for main worker tick',async t=>{
+test('real X ingestion persists observations but retired Shadow produces no signals',async t=>{
   const s=new Store(':memory:'),w=new Worker(s,{X_BEARER_TOKEN:'test',ENABLE_X:'true'}),at=Date.now();w.running=true;
   const ca='11111111111111111111111111111111';s.put('token',ca,{...newToken(ca,'p',at-60000,at-60000),fdv:30000,lp:30000,priceUsd:1,marketAt:at});
   const run=newDiffusionRun(at-1000);s.put('shadow-run',run.id,run);s.put('config','shadow-active',{id:run.id});
@@ -90,5 +90,5 @@ test('real X ingestion timestamps drive new Shadow signals without waiting for m
     {id:'two',author_id:'bob',text:ca+' Questions remain about liquidity ownership and governance',created_at:new Date(at-1000).toISOString()}
   ],meta:{newest_id:'two'}}));
   await w.xPoll();const coin=s.get('token',ca);assert.equal(coin.xObservations.at(-1).newAuthors,2);assert.equal(coin.xBoostUntil-coin.xBoostStartedAt,180000);
-  const signal=s.get('shadow-run',run.id).arms[0].positions[0];assert.equal(signal.status,'pending');assert(signal.signalAt>=coin.lastXAt);assert.equal(signal.fills.length,0);s.close();
+  assert.equal(s.get('shadow-run',run.id).arms[0].positions.length,0);assert.throws(()=>w.analysis.startShadow({}),/已移除/);s.close();
 });

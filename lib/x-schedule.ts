@@ -1,3 +1,4 @@
+import {inResearchWindow} from './monitor-window.ts';
 import {socialWindow} from './social.ts';
 import {executionReady} from './execution.ts';
 
@@ -12,7 +13,7 @@ export function xObservation(before:any[], posts:any[], at:number, complete:bool
 }
 
 export function xSchedule(tokens:any[],now:number,lowFdv:number) {
-  const eligible=tokens.filter(t=>['observing','priority'].includes(t.status)&&!t.marketError&&t.fdv>=lowFdv&&t.marketAt<=now&&now-t.marketAt<120000);
+  const eligible=tokens.filter(t=>inResearchWindow(t,now)||(['observing','priority'].includes(t.status)&&!t.marketError&&t.fdv>=lowFdv&&t.marketAt<=now&&now-t.marketAt<120000));
   const tradable=(t:any)=>t.fdv>=20000&&t.fdv<=500000&&t.lp>=15000&&now-t.graduatedAt<=10800000&&executionReady(t,now);
   const accelerated=new Set(eligible.filter(t=>tradable(t)&&t.xBoostUntil>now).sort((a,b)=>(b.xNewAuthorAt??0)-(a.xNewAuthorAt??0)||a.ca.localeCompare(b.ca)).slice(0,5).map(t=>t.ca));
   return eligible.map(t=>{

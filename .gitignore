@@ -45,3 +45,7 @@ next-env.d.ts
 # Dedicated trading wallet files must remain outside the repository.
 *.keypair.json
 /secrets/
+
+/exports/
+/.export-venv/
+__pycache__/
