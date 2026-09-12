@@ -3,6 +3,7 @@ import {Jupiter, SOL, BUY_LAMPORTS, netQuoteLamports} from './jupiter.mjs';
 import {LiveWallet} from './live-wallet.mjs';
 import {fastGraduation} from './stonk.mjs';
 export const LIVE_C='stonk-graduation-c-v1';
+export const C_EXIT_POLICY={version:'c-stop30-trail40-10-time30-v1',stopLossPct:30,trailingActivationPct:40,trailingDrawdownPct:10,maxHoldMinutes:30};
 export function liveCEntry(t,state,now){return Number.isFinite(state.startedAt)&&t?.source==='stonk'&&t.migrationVerified===true&&t.creationVerified===true&&fastGraduation(t.createdAt,t.graduatedAt)&&t.graduatedAt>=state.startedAt&&t.graduatedAt<=now&&now-t.graduatedAt<=120000;}
 
 export function migrateLiveExit(position) {
@@ -17,6 +18,7 @@ export function exitReason(position, value, now) {
   position.highLamports = Math.max(position.highLamports ?? 0, value);
   if (value >= position.costLamports * (position.strategy===LIVE_C?1.4:2)) position.trailingActive = true;
   if (now - position.openedAt >= 1800000) return '最大持仓时间 30 分钟';
+  if (position.strategy===LIVE_C && value <= position.costLamports * .7) return '固定止损 -30%';
   if (position.trailingActive && value <= position.highLamports * (position.strategy===LIVE_C ? .9 : .8)) return position.strategy===LIVE_C?'移动止盈（高点回撤 10%）':'移动止盈（高点回撤 20%）';
   return null;
 }
@@ -50,7 +52,7 @@ export class LiveTrading {
     return {...state, acceptEntries:state.acceptEntries && this.env.ENABLE_LIVE_TRADING === 'true' && !!this.wallet && !this.error,
       enabled:this.env.ENABLE_LIVE_TRADING === 'true', configured:!!this.wallet && !this.error,
       wallet:this.wallet?.address ?? this.env.LIVE_WALLET_ADDRESS ?? null, error:this.error, jupiter:this.jup.status(),
-      buySol:.1, slippageBps:this.slippageBps, maxFeeLamports:this.maxFeeLamports,
+      buySol:.1, slippageBps:this.slippageBps, maxFeeLamports:this.maxFeeLamports,exitPolicy:C_EXIT_POLICY,
       positions:this.s.all('live-position').map(display), orders:this.s.all('live-order').map(({signedTransaction, ...publicOrder}) => display(publicOrder))};
   }
   control(action) {
@@ -97,7 +99,7 @@ export class LiveTrading {
   async buy(t, observation) {
     const id = 'buy:' + t.ca + ':' + observation.at;
     const previous=this.s.get('live-order',id),attempts=(previous?.attempts??0)+1;
-    const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, strategy:LIVE_C, quoteMint:t.quoteMint??null, quoteSymbol:t.quoteSymbol??null, side:'buy', at:this.clock(), signalAt:observation.at,
+    const intent = {id, ca:t.ca, symbol:t.symbol, source:t.source, strategy:LIVE_C, exitPolicy:{...C_EXIT_POLICY}, quoteMint:t.quoteMint??null, quoteSymbol:t.quoteSymbol??null, side:'buy', at:this.clock(), signalAt:observation.at,
       detectedAt:t.enrolledAt,attempts,firstAttemptAt:previous?.firstAttemptAt??this.clock(),status:'preparing', inputAmount:BUY_LAMPORTS, evidence:{type:'Stonk 毕业',graduatedAt:t.graduatedAt,fdv:t.fdv,lp:t.lp}};
     this.s.put('live-order', id, intent);
     try {
@@ -127,6 +129,7 @@ export class LiveTrading {
   }
   async checkExitInner(position) {
     migrateLiveExit(position);
+    if(position.strategy===LIVE_C)position.exitPolicy={...C_EXIT_POLICY};
     if (this.clock() - position.openedAt >= 1800000) position.exitReason ??= '最大持仓时间 30 分钟';
     position.checkedAt = this.clock(); this.s.put('live-position', position.ca, position);
     try {
@@ -134,11 +137,11 @@ export class LiveTrading {
       const value = Number(netQuoteLamports(q));
       if (!Number.isSafeInteger(value)) throw Error('卖出报价金额超出范围');
       const reason = position.exitReason ?? exitReason(position, value, this.clock());
-      if(reason)position.exitTriggeredAt??=this.clock();
+      if(reason&&!position.exitTriggeredAt){position.exitTriggeredAt=this.clock();position.exitTriggerEvidence={netLamports:value,costLamports:position.costLamports,highLamports:position.highLamports,quoteAt:q.receivedAt??this.clock(),reason,policy:position.exitPolicy??null};}
       Object.assign(position, {markLamports:value, quoteAt:this.clock(), quoteError:null, exitReason:reason});
       this.s.put('live-position', position.ca, position);
       if (!reason) return;
-      const intent = {id:'sell:' + position.ca + ':' + this.clock(), ca:position.ca, symbol:position.symbol, strategy:position.strategy??null, source:position.source, quoteMint:position.quoteMint??null, quoteSymbol:position.quoteSymbol??null, side:'sell', at:this.clock(), status:'preparing', inputAmount:position.quantity, reason};
+      const intent = {id:'sell:' + position.ca + ':' + this.clock(), ca:position.ca, symbol:position.symbol, strategy:position.strategy??null, exitPolicy:position.exitPolicy??null, exitTriggerEvidence:position.exitTriggerEvidence??null, source:position.source, quoteMint:position.quoteMint??null, quoteSymbol:position.quoteSymbol??null, side:'sell', at:this.clock(), status:'preparing', inputAmount:position.quantity, reason};
       this.s.put('live-order', intent.id, intent);
       try {await this.submit(intent, q);}
       catch (e) {if (this.s.get('live-order', intent.id)?.status !== 'confirming') this.s.put('live-order', intent.id, {...intent, status:'skipped', reason:e.message,diagnostic:e.diagnostic??null}); throw e;}
@@ -169,7 +172,7 @@ export class LiveTrading {
       try {
         this.s.put('live-order', order.id, {...publicOrder, status:receipt.failed ? 'failed' : 'confirmed', receipt, confirmedAt:this.clock()});
         if (!receipt.failed) {
-          if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, strategy:order.strategy??null, quoteMint:order.quoteMint??null, quoteSymbol:order.quoteSymbol??null, buyRoute:order.route??null, status:'open', quantity:receipt.quantity,
+          if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, strategy:order.strategy??null, exitPolicy:order.exitPolicy??null, quoteMint:order.quoteMint??null, quoteSymbol:order.quoteSymbol??null, buyRoute:order.route??null, status:'open', quantity:receipt.quantity,
             costLamports:-receipt.solDelta, openedAt:receipt.at, buySignature:order.signature, highLamports:0, trailingActive:false});
           else {
             const p = this.s.get('live-position', order.ca);

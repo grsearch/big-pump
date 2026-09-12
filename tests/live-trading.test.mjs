@@ -125,7 +125,7 @@ test('C does not require X, FDV or Shadow models when Jupiter validates the real
 });
 test('C exits at 40 percent activation, 10 percent drawdown and 30 minutes',()=>{
  const p={strategy:LIVE_C,costLamports:100,openedAt:now,highLamports:0};assert.equal(exitReason(p,139,now),null);assert(!p.trailingActive);assert.equal(exitReason(p,140,now),null);assert(p.trailingActive);assert.equal(exitReason(p,127,now),null);assert.match(exitReason(p,126,now),/10%/);
- assert.equal(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1799999),null);assert.match(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1800000),/30 分钟/);
+ assert.equal(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1799999),'固定止损 -30%');assert.match(exitReason({strategy:LIVE_C,costLamports:100,openedAt:now},20,now+1800000),/30 分钟/);
 });
 test('upgrading enabled A pauses new entries without deleting positions or pending orders',()=>{
  const f=setup();f.s.put('config','live-trading',{acceptEntries:true,wallet:'wallet',startedAt:now});f.s.put('live-position','old',{ca:'old',status:'open'});f.s.put('live-order','old-order',{id:'old-order',status:'confirming'});
