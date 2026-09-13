@@ -55,8 +55,8 @@ test('auto research queues zero-win wallets and age uses observed chain timestam
 test('coverage refresh expiry removes verified labels even without new wallet trades',()=>{
   const s=new Store(':memory:'),w=new Worker(s,{}),t=Date.now();
   for(const tr of winner())s.put('trade',tr.id,{...tr,at:tr.at+t-now,graduatedAt:tr.graduatedAt+t-now});
-  s.put('coverage','w',{parserVersion:3,complete:true,checkedAt:t,firstActivityAt:t-40*day});w.assess('w');assert.equal(s.get('wallet','w').status,'verified');
-  s.put('coverage','w',{parserVersion:3,complete:true,checkedAt:t-900001,firstActivityAt:t-40*day});w.reassessWallets();assert.equal(s.get('wallet','w').status,'watch');s.close();
+  s.put('coverage','w',{parserVersion:4,complete:true,checkedAt:t,firstActivityAt:t-40*day});w.assess('w');assert.equal(s.get('wallet','w').status,'verified');
+  s.put('coverage','w',{parserVersion:4,complete:true,checkedAt:t-900001,firstActivityAt:t-40*day});w.reassessWallets();assert.equal(s.get('wallet','w').status,'watch');s.close();
 });
 test('history scan keeps failed transaction fees and blocks unparsed swaps',async t=>{
   const s=new Store(':memory:'),w=new Worker(s,{HELIUS_API_KEY:'test'}),address='11111111111111111111111111111111';
@@ -70,4 +70,36 @@ test('history scan keeps failed transaction fees and blocks unparsed swaps',asyn
   assert.equal(s.get('coverage',address).unsupported,true);
   assert.equal(s.get('wallet',address).sevenDayProfitSol,null);
   s.close();
+});
+
+test('unrelated transfers do not hide complete realized performance',()=>{
+ const gift={id:'gift',wallet:'w',ca:'unrelated',at:now-100,side:'transfer',quantity:1,sol:0,graduatedAt:0,complete:false};
+ const w=assess([...winner(),gift]);assert.equal(w.status,'verified');assert.equal(w.sevenDayProfitSol,40);assert.equal(w.unknownPositions,1);
+});
+
+test('unknown cost contaminates only subsequent sales of that asset, retaining known partial profit',()=>{
+ const gift={id:'gift',wallet:'w',ca:'gift',at:now-10*day,side:'transfer',quantity:10,sol:0,graduatedAt:0,complete:false};
+ const sale={...gift,id:'sell',at:now-100,side:'sell',sol:100,complete:true};
+ const w=assess([...winner(),gift,sale]);assert.equal(w.sevenDayProfitSol,null);assert.equal(w.knownSevenDayProfitSol,40);assert.deepEqual(w.unknownRealizedAssets,['gift']);assert.equal(w.status,'watch');
+ const after={...gift,ca:'good',at:now-100};const prior=walletPeriod([...pair('good'),after],defaults,now,7);
+ assert.equal(prior.profit,4);
+});
+
+test('old unresolved activity expires but missing old cost still blocks a recent sale',()=>{
+ const old=pair('bad',1,5,now-20*day).map(t=>({...t,complete:false}));
+ assert.equal(assess([...winner(),...old]).sevenDayProfitSol,40);
+ assert.equal(evaluateWallet(winner(),defaults,now,true,now-40*day,[],[{at:now-8*day}]).status,'verified');
+ const w=evaluateWallet(winner(),defaults,now,true,now-40*day,[],[{at:now-2*day}]);
+ assert.equal(w.sevenDayProfitSol,null);assert.equal(w.oneDayProfitSol,40);assert.equal(w.knownSevenDayProfitSol,40);
+});
+
+test('legacy sticky flag is rescanned and manually reparsing repairs an unsupported swap',async t=>{
+ const s=new Store(':memory:'),w=new Worker(s,{HELIUS_API_KEY:'test'}),address='11111111111111111111111111111111',at=Date.now()-1000;
+ s.put('coverage',address,{parserVersion:3,unsupported:true,complete:true,head:'legacy',before:'old',capped:true});
+ const raw={signature:'repair',timestamp:Math.floor(at/1000),type:'SWAP',feePayer:address,fee:5000};
+ t.mock.method(globalThis,'fetch',async()=>Response.json([raw]));
+ await w.scanWallet(address);assert.equal(s.get('coverage',address).parserVersion,4);assert.equal(s.all('wallet-issue').length,1);
+ s.put('trade','old-transfer',{id:'repair',wallet:address,ca:'quote',at,side:'transfer',quantity:1,sol:0,complete:false});
+ t.mock.method(w,'parseTrades',()=>[{...pair('c')[0],id:'repair',wallet:address,at}]);
+ await w.scanWallet(address);assert.equal(s.all('wallet-issue').length,0);assert.equal(s.all('wallet-fee').length,0);assert.equal(s.all('trade').filter(t=>t.side==='transfer').length,0);assert.equal(s.get('coverage',address).unsupported,false);s.close();
 });

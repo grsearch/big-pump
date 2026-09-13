@@ -6,11 +6,12 @@ export function walletPeriod(trades: Trade[], r: Rules, now: number, days: numbe
   const since = now - days * 86400000;
   let profit = -expenses.filter(e=>e.at>since&&e.at<=now).reduce((sum,e)=>sum+e.sol,0), unknown = false;
   const evidence: {ca:string; multiple:number; profit:number; lastSaleAt:number}[] = [];
+  const unknownAssets:string[]=[];
   for (const [ca, rows] of Map.groupBy(trades.filter(t => t.at <= now), t => t.ca)) {
     const tx = rows.map(t=>({...t,sol:(t.currency??'SOL')==='SOL'?t.sol:(t.accountingSol??NaN)})).sort((a,b) => a.at-b.at || a.id.localeCompare(b.id));
     const lots: {qty:number; cost:number; at:number}[] = [];
     let invalid = false, bought = 0, first = Infinity, grad = 0;
-    let proceeds = 0, cost = 0, lastSaleAt = 0;
+    let proceeds = 0, cost = 0, lastSaleAt = 0, affected = false;
     for (const t of tx) {
       if (t.side === 'transfer' || t.complete === false || !Number.isFinite(t.sol) || t.quantity <= 0) invalid = true;
       if (t.side === 'buy') {
@@ -25,17 +26,18 @@ export function walletPeriod(trades: Trade[], r: Rules, now: number, days: numbe
           if (lot.qty <= 1e-9) lots.shift();
         }
         if (q > 1e-6) invalid = true;
-        if (t.at > since) {proceeds += t.sol; cost += matchedCost; lastSaleAt=t.at;}
+        if (t.at > since) {
+          if(invalid) affected=true;
+          else {proceeds += t.sol; cost += matchedCost; lastSaleAt=t.at;}
+        }
       }
-      if (invalid && t.at > since) unknown = true;
     }
-    if (invalid && lastSaleAt) unknown = true;
-    if (invalid) continue;
+    if(affected){unknown=true;unknownAssets.push(ca);}
     profit += proceeds-cost;
     const multiple = cost > 0 ? proceeds/cost : 0;
-    if (lastSaleAt && grad > 0 && first <= grad+r.earlyMinutes*60000 && cost >= r.minInvestSol && multiple >= r.bigWinMultiple && bought > 0) {
+    if (!invalid && lastSaleAt && grad > 0 && first <= grad+r.earlyMinutes*60000 && cost >= r.minInvestSol && multiple >= r.bigWinMultiple && bought > 0) {
       evidence.push({ca,multiple,profit:proceeds-cost,lastSaleAt});
     }
   }
-  return {profit:unknown?null:profit, evidence, unknown};
+  return {profit:unknown?null:profit, knownProfit:profit, unknownAssets, evidence, unknown};
 }

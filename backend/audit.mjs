@@ -2,7 +2,7 @@ const forbidden=/signedTransaction|secret|private.?key|mnemonic|bearer|authoriza
 // Audit qualification changes, not complete per-token histories on every clock tick.
 export function walletAudit(w){
  if(!w)return null;
- const fields=['address','status','verifiedAt','identifiedAt','unknownPositions','samples','wins','profit','profitUsd','oneDayProfitSol','sevenDayProfitSol','periodComplete','qualificationReason','firstActivityAt','ageEligible','ageReason','coverageComplete','scanQueued','scanError','coverageNote'];
+ const fields=['address','status','verifiedAt','identifiedAt','unknownPositions','samples','wins','profit','profitUsd','oneDayProfitSol','sevenDayProfitSol','periodComplete','knownOneDayProfitSol','knownSevenDayProfitSol','unresolvedSwapCount','qualificationReason','firstActivityAt','ageEligible','ageReason','coverageComplete','scanQueued','scanError','coverageNote'];
  return {schema:'wallet-summary-v1',...Object.fromEntries(fields.filter(k=>w[k]!==undefined).map(k=>[k,w[k]])),positionCount:w.positions?.length??0,bigWinCount:w.bigWins?.length??0};
 }
 export function redact(value){
