@@ -22,5 +22,12 @@ with tempfile.TemporaryDirectory() as tmp:
     except RuntimeError:pass
     else:raise AssertionError('expected failure')
     assert not list((p/'out').glob('flow-export-*')) and not (p/'out'/'.export-sharded.lock').exists()
+    from unittest.mock import patch
+    low=[False]
+    with patch('export_sharded.shutil.disk_usage',side_effect=lambda _:type('Space',(),{'free':0 if low[0] else 10**12})()):
+        try:export(path,p/'out',end+2000,_after_snapshot=lambda:low.__setitem__(0,True))
+        except RuntimeError:pass
+        else:raise AssertionError('running disk guard must stop export')
+    assert not list((p/'out').glob('flow-export-*')) and not (p/'out'/'.export-sharded.lock').exists()
     db.close()
 print('Sharded export: concurrent writer excluded, same snapshot, failure cleanup passed')

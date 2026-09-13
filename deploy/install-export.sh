@@ -15,11 +15,10 @@ After=network-online.target
 Type=oneshot
 WorkingDirectory="$project"
 EnvironmentFile="$project/.env.cos"
-ExecStart="$python_bin" "$project/scripts/export_daily.py" --upload
+ExecStart="$python_bin" "$project/scripts/export_sharded.py" --upload
 UMask=0077
 TimeoutStartSec=1800
-Restart=on-failure
-RestartSec=300
+Restart=no
 EOF
 cat > /etc/systemd/system/big-pump-export.timer <<'EOF'
 [Unit]

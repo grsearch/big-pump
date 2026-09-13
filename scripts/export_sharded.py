@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bounded-row export from one SQLite backup; no production writes or service control."""
-import argparse,csv,datetime as dt,gzip,hashlib,json,os,pathlib,shutil,sqlite3,tarfile,tempfile
+import argparse,csv,datetime as dt,gzip,hashlib,json,os,pathlib,shutil,sqlite3,tarfile,tempfile,signal
 from export_daily import clean,upload,TZ,attribute_order
 
 def _export(db_path,out,end,start=None,_after_snapshot=None):
@@ -8,9 +8,14 @@ def _export(db_path,out,end,start=None,_after_snapshot=None):
     if start>=end:raise ValueError('start must precede end')
     out=pathlib.Path(out);out.mkdir(parents=True,exist_ok=True)
     db_path=pathlib.Path(db_path).resolve()
-    # Snapshot plus staging/archive headroom; never silently consume the last free bytes.
-    needed=4*(db_path.stat().st_size+(pathlib.Path(str(db_path)+'-wal').stat().st_size if pathlib.Path(str(db_path)+'-wal').exists() else 0))+512*1024**2
-    if shutil.disk_usage(out).free<needed:raise RuntimeError('Insufficient space for consistent snapshot and archive')
+    reserve=512*1024**2
+    def space(extra=0):
+        if shutil.disk_usage(out).free<reserve+extra:raise RuntimeError('Insufficient free space; export stopped before consuming reserve')
+    # Reserve only the actual snapshot size up front. Check output growth throughout.
+    probe=sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)
+    try: snapshot_bytes=probe.execute('PRAGMA page_count').fetchone()[0]*probe.execute('PRAGMA page_size').fetchone()[0]
+    finally:probe.close()
+    space(snapshot_bytes)
     name=dt.datetime.fromtimestamp(end/1000,TZ).strftime('%Y-%m-%d-%H%M%S')
     archive=out/(name+'.tar.gz')
     if archive.exists():raise FileExistsError(archive)
@@ -21,14 +26,16 @@ def _export(db_path,out,end,start=None,_after_snapshot=None):
             src.execute('BEGIN')
             high=src.execute('SELECT COALESCE(MAX(seq),0) FROM audit').fetchone()[0]
             snapshot_at=int(dt.datetime.now(dt.timezone.utc).timestamp()*1000)
-            src.backup(snap,pages=1024)
+            src.backup(snap,pages=256,progress=lambda status,remaining,total:space(16*1024**2))
         except BaseException:
             snap.close();raise
         finally:src.close()
         try:
             if _after_snapshot:_after_snapshot()
             def records(kind):
-                for (data,) in snap.execute('SELECT data FROM records WHERE kind=?',(kind,)):yield clean(json.loads(data))
+                for index,(data,) in enumerate(snap.execute('SELECT data FROM records WHERE kind=?',(kind,))):
+                    if index%100==0:space(16*1024**2)
+                    yield clean(json.loads(data))
             positions=[p for p in records('live-position') if (p.get('status')=='open' and p.get('openedAt',0)<end) or start<=p.get('closedAt',0)<end or start<=p.get('openedAt',0)<end]
             times=['at','firstAttemptAt','broadcastAt','confirmedAt','reconciledAt']
             orders=[d for d in records('live-order') if any(isinstance(d.get(k),(int,float)) and start<=d[k]<end for k in times)]
@@ -58,6 +65,7 @@ def _export(db_path,out,end,start=None,_after_snapshot=None):
             try:
                 for seq,at,k,ca,data in snap.execute('SELECT seq,at,kind,ca,data FROM audit WHERE at>=? AND at<? AND seq<=? ORDER BY at,seq',(start,end,high)):
                     group=dt.datetime.fromtimestamp(at/1000,TZ).strftime('%Y%m%d-%H00')
+                    if audits%100==0:space(16*1024**2)
                     if group!=hour:
                         if f:f.close()
                         hour=group;path='audit/'+group+'.jsonl.gz';f=gzip.open(root/path,'wt',encoding='utf8');shards.append({'file':path,'rows':0})
@@ -72,6 +80,7 @@ def _export(db_path,out,end,start=None,_after_snapshot=None):
                 def array(key,rows):
                     f.write(','+json.dumps(key)+':[');n=0
                     for row in rows:
+                        if n%100==0:space(16*1024**2)
                         if n:f.write(',')
                         f.write(json.dumps(row,ensure_ascii=False));n+=1
                     f.write(']');return n
@@ -87,6 +96,9 @@ def _export(db_path,out,end,start=None,_after_snapshot=None):
                 files.append({'file':path.relative_to(root).as_posix(),'bytes':path.stat().st_size,'sha256':digest})
         manifest={'window':window,'snapshotAtMs':snapshot_at,'snapshotAuditMaxSeq':high,'consistentSnapshot':True,'counts':counts,'files':files}
         (root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf8')
+        # Release the closed snapshot before creating a second compressed copy.
+        (temp/'snapshot.db').unlink()
+        space(sum(p.stat().st_size for p in root.rglob('*') if p.is_file())+16*1024**2)
         staged=temp/'complete.tar.gz'
         with tarfile.open(staged,'w:gz') as tar:
             for path in sorted(root.rglob('*')):
@@ -105,7 +117,9 @@ def export(db_path,out,end,start=None,_after_snapshot=None):
     finally:lock.unlink(missing_ok=True)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--db',default='data/pump.db');p.add_argument('--out',default='exports/daily');p.add_argument('--start-ms',type=int);p.add_argument('--end-ms',type=int);p.add_argument('--upload',action='store_true');args=p.parse_args()
+    def terminate(*args):raise SystemExit('Export interrupted; temporary files will be cleaned')
+    signal.signal(signal.SIGTERM,terminate)
+    p=argparse.ArgumentParser();p.add_argument('--db',default=str(pathlib.Path(os.environ.get('DATA_DIR','data'))/'pump.db'));p.add_argument('--out',default='exports/daily');p.add_argument('--start-ms',type=int);p.add_argument('--end-ms',type=int);p.add_argument('--upload',action='store_true');args=p.parse_args()
     now=dt.datetime.now(TZ);end=now.replace(hour=6,minute=0,second=0,microsecond=0)
     if now<end:end-=dt.timedelta(days=1)
     archive,manifest=export(args.db,args.out,args.end_ms or int(end.timestamp()*1000),args.start_ms)

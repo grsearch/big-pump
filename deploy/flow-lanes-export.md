@@ -20,7 +20,7 @@ cd /home/ubuntu/big-pump
 - 所有表与审计从同一 SQLite 只读备份读取。manifest 与 analysis 都有 `consistentSnapshot`、`snapshotAtMs` 和 `snapshotAuditMaxSeq`。
 - 按小时 gzip 分片写审计，context/flow 数组逐行写入；不一次性加载完整 audit。上传校验也按块读取。
 - 临时快照和中间文件在成功或普通异常时清理；归档完成后才发布最终文件。
-- 开始前保守预留数据库及 WAL 大小的 4 倍加 512MB 空间，避免在无空间时启动。输出目录锁阻止本脚本重复并发导出；已有同名归档不覆盖。
+- 开始前预留一份实际 SQLite 快照大小加 512MB，备份和输出期间持续检查空间，打包前释放快照（详见 wallet-audit-retention.md）。输出目录锁阻止本脚本重复并发导出；已有同名归档不覆盖。
 - SIGKILL/断电无法运行清理：锁内记录 PID。必须先确认对应导出进程不存在，再由运维清理该输出目录内的遗留锁和 `flow-export-*` 临时目录，不能直接删除所有 /tmp。
 - 按成交时间筛 flowTrades、按审计时间筛 audit，即使同一快照也不要求数量永远相等。应逐个签名解释差异。回测使用接收时间和余额核验时间，不能让后补数据提前可见。
 
