@@ -5,7 +5,7 @@ import {LiveWallet} from './live-wallet.mjs';
 import {fastGraduation} from './stonk.mjs';
 import {ENTRY_POLICY} from './live-entry.mjs';
 export const LIVE_C='stonk-graduation-c-v1';
-export const C_EXIT_POLICY={version:'c-no-stop-trail40-10-time30-v2',stopLossPct:null,trailingActivationPct:40,trailingDrawdownPct:10,maxHoldMinutes:30};
+export const C_EXIT_POLICY={version:'c-stop20-trail40-10-time30-v3',stopLossPct:20,trailingActivationPct:40,trailingDrawdownPct:10,maxHoldMinutes:30};
 export function liveCEntry(t,state,now){return Number.isFinite(state.startedAt)&&t?.source==='stonk'&&t.migrationVerified===true&&t.creationVerified===true&&fastGraduation(t.createdAt,t.graduatedAt)&&t.graduatedAt>=state.startedAt&&t.graduatedAt<=now&&now-t.graduatedAt<=ENTRY_POLICY.windowMs;}
 
 export function migrateLiveExit(position) {
@@ -28,6 +28,7 @@ export function exitReason(position, value, now) {
   position.highLamports = Math.max(position.highLamports ?? 0, value);
   if (value >= position.costLamports * (position.strategy===LIVE_C?1.4:2)) position.trailingActive = true;
   if (now - position.openedAt >= 1800000) return '最大持仓时间 30 分钟';
+  if (position.strategy===LIVE_C && value<=position.costLamports*(1-C_EXIT_POLICY.stopLossPct/100)) return '固定止损 -20%';
   if (position.trailingActive && value <= position.highLamports * (position.strategy===LIVE_C ? .9 : .8)) return position.strategy===LIVE_C?'移动止盈（高点回撤 10%）':'移动止盈（高点回撤 20%）';
   return null;
 }
