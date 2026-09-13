@@ -69,7 +69,8 @@ def upload(archive):
         if not chunk:break
         digest.update(chunk)
     remote.close()
-    if digest.hexdigest()!=hashlib.sha256(archive.read_bytes()).hexdigest():raise RuntimeError('COS verification failed')
+    with archive.open('rb') as local:local_digest=hashlib.file_digest(local,'sha256').hexdigest()
+    if digest.hexdigest()!=local_digest:raise RuntimeError('COS verification failed')
     return {'bucket':bucket,'region':'na-siliconvalley','key':key,'sha256':digest.hexdigest()}
 
 if __name__=='__main__':

@@ -35,39 +35,64 @@ export function newHolderEvidence(tx,event){
 
 export class TokenFlow {
  constructor(worker){this.w=worker;this.s=worker.s;this.busy=false;}
+ state(t){
+  const old=this.s.get('flow-scan',t.ca)??{ca:t.ca,startedAt:Date.now(),pages:0,unsupported:0};
+  if(old.version===2)return old;
+  const next={...old,version:2,head:old.pendingHead??old.head,jobs:old.before?[{id:'legacy',before:old.before,until:old.head}]:[],before:null,pendingHead:null};
+  this.s.put('flow-scan',t.ca,next);return next;
+ }
+ update(t,patch){const state={...this.state(t),...patch};this.s.put('flow-scan',t.ca,state);return state;}
+ async page(t,options){
+  const sigs=await this.w.rpc('getSignaturesForAddress',[t.pool,{limit:20,commitment:'confirmed',...options}]);
+  if(!Array.isArray(sigs))throw Error('invalid signatures');
+  const eligible=sigs.filter(x=>!x.err&&(x.blockTime==null||x.blockTime*1000>=t.graduatedAt));
+  const parsed=eligible.length?await jsonFetch(`https://api.helius.xyz/v0/transactions/?api-key=${encodeURIComponent(this.w.env.HELIUS_API_KEY)}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({transactions:eligible.map(x=>x.signature)})}):[];
+  if(!Array.isArray(parsed)||eligible.some(s=>!parsed.some(x=>x.signature===s.signature)))throw Error('incomplete parsed response');
+  let unsupported=0;
+  for(const tx of parsed){
+   const event=flowTrade(tx,t,(mint,at)=>this.w.valuation.price(mint,at)),id=t.ca+':'+tx.signature;
+   if(event){if(!this.s.has('flow-trade',id)){this.s.put('flow-trade',id,event);this.s.audit('flow-trade',t.ca,event);}}
+   else if(tx.type==='SWAP'&&!this.s.has('flow-rejected',id)){this.s.put('flow-rejected',id,{ca:t.ca,id:tx.signature,at:tx.timestamp*1000});unsupported++;}
+   await new Promise(resolve=>setImmediate(resolve));
+  }
+  return {sigs,unsupported,done:sigs.length<20||sigs.some(x=>x.blockTime!=null&&x.blockTime*1000<t.graduatedAt)};
+ }
  async tick(){
   if(this.busy||!this.w.running||!this.w.rpc||this.w.env.ENABLE_TOKEN_FLOW==='false')return;
   this.busy=true;
   try{
    const now=Date.now(),tokens=this.s.summaries('token').filter(t=>t.source==='stonk'&&t.pool&&inResearchWindow(t,now));
-   const t=tokens.sort((a,b)=>(this.s.get('flow-scan',a.ca)?.checkedAt??0)-(this.s.get('flow-scan',b.ca)?.checkedAt??0))[0];
+   for(const t of tokens)this.state(t);
+   const t=tokens.sort((a,b)=>(this.state(a).checkedAt??0)-(this.state(b).checkedAt??0))[0];
    if(!t)return;
-   const state=this.s.get('flow-scan',t.ca)??{ca:t.ca,startedAt:now,pages:0,unsupported:0};
-   this.s.put('flow-scan',t.ca,{...state,checkedAt:now});
+   const state=this.state(t);this.update(t,{checkedAt:now});
    try{
-    // One bounded page per tick; persistent cursor catches up without blocking live execution.
-    const sigs=await this.w.rpc('getSignaturesForAddress',[t.pool,{limit:20,commitment:'confirmed',...(state.before?{before:state.before}:{}),...(state.head?{until:state.head}:{})}]);
-    if(!Array.isArray(sigs))throw Error('invalid signatures');
-    const eligible=sigs.filter(x=>!x.err&&(x.blockTime==null||x.blockTime*1000>=t.graduatedAt));
-    const parsed=eligible.length?await jsonFetch(`https://api.helius.xyz/v0/transactions/?api-key=${encodeURIComponent(this.w.env.HELIUS_API_KEY)}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({transactions:eligible.map(x=>x.signature)})}):[];
-    if(!Array.isArray(parsed)||eligible.some(s=>!parsed.some(x=>x.signature===s.signature)))throw Error('incomplete parsed response');
-    let unsupported=state.unsupported??0;
-    for(const tx of parsed){
-     const event=flowTrade(tx,t,(mint,at)=>this.w.valuation.price(mint,at));
-     if(event){const id=t.ca+':'+event.id;if(!this.s.has('flow-trade',id)){this.s.put('flow-trade',id,event);this.s.audit('flow-trade',t.ca,event);}}
-     else if(tx.type==='SWAP')unsupported++;
-     await new Promise(resolve=>setImmediate(resolve));
-    }
-    const done=sigs.length<20||sigs.some(x=>x.blockTime!=null&&x.blockTime*1000<t.graduatedAt);
-    const next={...state,checkedAt:Date.now(),pages:state.pages+1,unsupported,error:null,pendingHead:state.pendingHead??sigs[0]?.signature,before:done?null:sigs.at(-1)?.signature};
-    if(done){next.head=next.pendingHead??state.head;next.pendingHead=null;next.caughtUpAt=Date.now();}
-    this.s.put('flow-scan',t.ca,next);
+    // Always start at the newest signature. Old cursors never gate this lane.
+    const {sigs,unsupported,done}=await this.page(t,state.head?{until:state.head}:{});
+    const current=this.state(t),jobs=[...current.jobs];
+    if(!done&&sigs.length)jobs.push({id:sigs[0].signature,before:sigs.at(-1).signature,until:state.head});
+    const next=this.update(t,{jobs,head:sigs[0]?.signature??state.head,pages:current.pages+1,unsupported:current.unsupported+unsupported,error:null,latestCheckedAt:Date.now(),...(jobs.length?{caughtUpAt:null}:{caughtUpAt:Date.now()})});
     this.s.audit('flow-coverage',t.ca,next);
-    // Bounded enrichment; unknown stays unknown if RPC/owner evidence is missing.
-    const pending=this.s.db.prepare("SELECT id,data FROM records WHERE kind='flow-trade' AND json_extract(data,'$.ca')=? AND json_extract(data,'$.side')='buy' AND json_extract(data,'$.holderCheckedAt') IS NULL LIMIT 2").all(t.ca);
-    for(const row of pending){const event=JSON.parse(row.data);try{const chain=await this.w.rpc('getTransaction',[event.id,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);const checked={...event,newHolder:newHolderEvidence(chain,event),holderCheckedAt:Date.now()};this.s.put('flow-trade',row.id,checked);this.s.audit('flow-holder',t.ca,checked);}catch{break;}}
-   }catch{this.s.put('flow-scan',t.ca,{...this.s.get('flow-scan',t.ca),error:'成交采集失败，将沿游标重试',checkedAt:Date.now()});}
+   }catch{this.update(t,{error:'最新成交采集失败，下轮重试'});}
+   if(!this.historyPromise){this.historyPromise=this.history(tokens).catch(()=>{}).finally(()=>{this.historyPromise=null;});}
+   if(!this.holderPromise){this.holderPromise=this.enrich(t).catch(()=>{}).finally(()=>{this.holderPromise=null;});}
   }finally{this.busy=false;}
+ }
+ async history(tokens){
+  const t=tokens.filter(t=>this.state(t).jobs.length).sort((a,b)=>(this.state(a).historyCheckedAt??0)-(this.state(b).historyCheckedAt??0))[0];
+  if(!t)return;
+  const job=this.state(t).jobs[0];this.update(t,{historyCheckedAt:Date.now()});
+  try{
+   const {sigs,unsupported,done}=await this.page(t,{before:job.before,...(job.until?{until:job.until}:{})});
+   // Reload after awaits: a concurrent latest scan may have appended gap jobs.
+   const current=this.state(t),jobs=current.jobs.flatMap(j=>j.id!==job.id?[j]:done?[]:[{...j,before:sigs.at(-1).signature}]);
+   const next=this.update(t,{jobs,historyError:null,historyPages:(current.historyPages??0)+1,unsupported:current.unsupported+unsupported,...(!jobs.length&&!current.error?{caughtUpAt:Date.now()}:{} )});
+   this.s.audit('flow-coverage',t.ca,next);
+  }catch{this.update(t,{historyError:'历史补扫失败，保留游标重试'});}
+ }
+ async enrich(t){
+  const pending=this.s.db.prepare("SELECT id,data FROM records WHERE kind='flow-trade' AND json_extract(data,'$.ca')=? AND json_extract(data,'$.side')='buy' AND json_extract(data,'$.holderCheckedAt') IS NULL ORDER BY json_extract(data,'$.at') DESC LIMIT 2").all(t.ca);
+  for(const row of pending){const event=JSON.parse(row.data);try{const chain=await this.w.rpc('getTransaction',[event.id,{encoding:'json',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);const checked={...event,newHolder:newHolderEvidence(chain,event),holderCheckedAt:Date.now()};this.s.put('flow-trade',row.id,checked);this.s.audit('flow-holder',t.ca,checked);}catch{break;}}
  }
 }
 

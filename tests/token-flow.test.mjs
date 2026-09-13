@@ -12,3 +12,13 @@ test('summary separates large sells and first observed buys; unknown valuation h
 test('flow scanner persists cursor, deduplicates and never advances incomplete responses',async()=>{const s=new Store(':memory:'),now=Date.now(),token={...t,graduatedAt:now-10000,enrolledAt:now-10000};s.put('token','c',token);const original=globalThis.fetch;let requests=0;const w={s,running:true,env:{HELIUS_API_KEY:'test'},valuation:{price:()=>100},rpc:async()=>[{signature:'s',blockTime:Math.floor(now/1000)}]};const f=new TokenFlow(w);globalThis.fetch=async()=>{requests++;return new Response(JSON.stringify([{...tx,timestamp:Math.floor(now/1000)}]));};try{await f.tick();await f.tick();assert.equal(s.all('flow-trade').length,1);assert.equal(s.get('flow-scan','c').head,'s');globalThis.fetch=async()=>new Response('[]');await f.tick();assert(s.get('flow-scan','c').error);assert.equal(s.get('flow-scan','c').pages,2);assert.equal(requests,2);}finally{globalThis.fetch=original;s.close();}});
 
 test('new holding evidence needs known owners and zero to positive touched-account balances',()=>{const b=n=>({mint:'c',owner:'w',uiTokenAmount:{amount:String(n)}});const event={ca:'c',wallet:'w'};assert.equal(newHolderEvidence({meta:{preTokenBalances:[b(0)],postTokenBalances:[b(10)]}},event),true);assert.equal(newHolderEvidence({meta:{preTokenBalances:[b(4)],postTokenBalances:[b(10)]}},event),false);assert.equal(newHolderEvidence({meta:{preTokenBalances:[{...b(0),owner:null}],postTokenBalances:[b(10)]}},event),null);});
+
+test('latest lane advances while legacy historical RPC is pending and preserves newly queued gaps',async()=>{
+ const s=new Store(':memory:'),now=Date.now(),token={...t,graduatedAt:now-100000,enrolledAt:now-100000};s.put('token','c',token);
+ s.put('flow-scan','c',{ca:'c',pages:8,unsupported:2,before:'old-cursor',pendingHead:'old-head'});
+ const f=new TokenFlow({s,running:true,rpc:()=>{},env:{}});f.enrich=async()=>{};
+ let release,heads=0;const calls=[];
+ f.page=async(t,options)=>{calls.push(options);if(options.before)return new Promise(resolve=>{release=resolve;});heads++;return {sigs:Array.from({length:20},(_,i)=>({signature:'head'+heads+'-'+i})),unsupported:0,done:false};};
+ await f.tick();await f.tick();assert.equal(heads,2);assert.equal(calls.filter(c=>!c.before).length,2);assert.equal(s.get('flow-scan','c').head,'head2-0');assert.equal(s.get('flow-scan','c').jobs.length,3);
+ release({sigs:[],unsupported:0,done:true});await f.historyPromise;assert.equal(s.get('flow-scan','c').jobs.length,2);assert.equal(s.get('flow-scan','c').head,'head2-0');s.close();
+});
