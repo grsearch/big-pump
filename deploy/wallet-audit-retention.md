@@ -34,3 +34,9 @@ cd /home/ubuntu/big-pump
 `deploy/install-export.sh` 已指向仓库分片脚本，且取消失败后自动重启循环，保留北京时间 06:00 和 Persistent 调度。验证通过后由 OpenClaw 检查现有服务的 Python、COS 环境文件、DATA_DIR 与超时设置；保持这些部署参数，仅切换脚本入口并设置 Restart=no，再恢复原定时器。不要未经验证直接启用，以免 Persistent 补跑。
 
 上传失败时已生成本地归档保留，重试应上传同一个文件，不重复生成同名归档。锁和临时文件遇 SIGKILL/断电仍需确认进程不存在后定向清理。
+
+## 判断清理进度
+
+新版清理脚本向 stderr 每约 10 秒输出阶段进度（有读取/处理进展时），最后向 stdout 输出结果。后台启动需将 stdout 与 stderr 一起重定向。阶段为 archive_hash、cos_download_hash、local_archive_hash、compare_rows、delete_rows、complete。只有 delete_rows 的 deleted 才表示已提交删除，不要把 matched 当作已删除。网络读阻塞时日志不一定每 10 秒出现，需同时看进程 CPU / I/O。
+
+apply 会重新核对归档和数据库，不复用前一次 dry-run，因此大归档可能再次花费几十分钟。旧进程不会因更新脚本文件获得进度日志，不要为看日志重复启动。由 OpenClaw 检查现有进程 PID、运行时长、日志末尾、间隔十秒的 /proc/PID/io 变化和退出码。不要用一次全表 COUNT 再增加大库扫描压力，不要通过 db 文件是否变小判断完成。

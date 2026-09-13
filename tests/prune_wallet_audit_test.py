@@ -19,7 +19,10 @@ with tempfile.TemporaryDirectory() as tmp:
     except ValueError:pass
     else:raise AssertionError('remote mismatch must block deletion')
     assert db.execute('SELECT count(*) FROM audit').fetchone()[0]==2
-    result=prune(p/'db',archive,True,'key',lambda *args:None)
+    stages=[]
+    result=prune(p/'db',archive,True,'key',lambda *args:None,_progress=lambda stage,**values:stages.append((stage,values)))
+    assert stages[-1][0]=='complete' and stages[-1][1]['deleted']==1
+    assert any(stage=='compare_rows' for stage,values in stages)
     assert result['deleted']==1
     assert db.execute('SELECT kind FROM audit').fetchone()[0]=='live-position'
     assert db.execute('SELECT count(*) FROM records').fetchone()[0]==1
