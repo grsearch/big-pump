@@ -22,7 +22,8 @@ process.on('message',m=>{
 });
 const tick=setInterval(()=>{void live.tick(running).catch(failure);},1000);
 const exit=setInterval(()=>{void live.exitTick().catch(failure);},1000);
+const settlement=setInterval(()=>{void live.settlementTick().catch(failure);},1000);
 const report=setInterval(()=>{try{status('status');}catch(e){failure(e);}},5000);
-const stop=()=>{if(stopping)return;stopping=true;live.collectorRunning=false;live.dispose();clearInterval(tick);clearInterval(exit);clearInterval(report);store.close();process.exit(0);};
+const stop=()=>{if(stopping)return;stopping=true;live.collectorRunning=false;live.dispose();clearInterval(tick);clearInterval(exit);clearInterval(settlement);clearInterval(report);store.close();process.exit(0);};
 process.on('disconnect',stop);process.on('SIGTERM',stop);process.on('SIGINT',stop);
 status('ready');

@@ -63,7 +63,7 @@ test('collector stop during quote prevents submission',async()=>{
 });
 test('routine exits alternate with new entries but triggered exits take priority',async()=>{
  for(const urgent of [false,true]){
- const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());f.s.put('live-position','older',{ca:'older',status:'open',openedAt:now-10000,checkedAt:0,...(urgent?{exitReason:'exit'}:{})});
+ const f=setup();f.engine.control('start');f.s.put('live-signal','coin',token());f.s.put('live-position','older',{ca:'older',status:'open',openedAt:now-10000,quoteAt:now-6000,checkedAt:0,...(urgent?{exitReason:'exit'}:{})});
  let checks=0;f.engine.checkExit=async()=>{checks++;};await f.engine.tick(true);
  assert.equal(f.submitted(),urgent?0:1);if(!urgent)await f.engine.tick(true);assert.equal(checks,1);f.s.close();
  }

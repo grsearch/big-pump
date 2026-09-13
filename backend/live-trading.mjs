@@ -104,7 +104,7 @@ export class LiveTrading {
         const order=this.s.get('live-order','buy:'+t.ca+':'+t.graduatedAt);
         return !order||(['retrying','preparing'].includes(order.status)&&now>=(order.nextAttemptAt??0));
       }).sort((a,b)=>b.graduatedAt-a.graduatedAt):[];
-      const urgent=due.find(p=>p.exitReason||now-p.openedAt>=1800000);
+      const urgent=due.find(p=>p.exitReason||!p.quoteAt||now-p.openedAt>=1800000);
       if(urgent||due.length&&(!candidates.length||this.lastAction==='buy')){await this.checkExit(urgent??due[0]);this.lastAction='sell';return;}
       for (const t of candidates) {
         const o = {at:t.graduatedAt};
@@ -129,7 +129,7 @@ export class LiveTrading {
       const current = this.s.get('live-signal', t.ca);
       if (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(current,this.state(),this.clock())) throw Error('签名前入场条件失效');
       await this.submit(intent, q);
-    } catch (e) {if (this.s.get('live-order', id)?.status !== 'confirming'){
+    } catch (e) {if (!['confirming','confirmed','failed'].includes(this.s.get('live-order', id)?.status)){
       const nextAttemptAt=Math.max(this.clock()+[300,600,1000][Math.min(2,attempts-1)],e.retryAt??0);
       const retry=(e.retryable===true||[5,6].includes(e.errcode))&&attempts<ENTRY_POLICY.maxAttempts&&this.collectorRunning!==false&&this.state().acceptEntries&&nextAttemptAt<=observation.at+ENTRY_POLICY.windowMs;
       this.s.put('live-order', id, {...intent,status:retry?'retrying':'skipped',nextAttemptAt:retry?nextAttemptAt:null,reason:e.message,diagnostic:e.diagnostic??null});
@@ -139,6 +139,13 @@ export class LiveTrading {
   async exitTick(){
     if(this.exitLaneBusy||!this.wallet||this.error||this.env.ENABLE_LIVE_TRADING!=='true')return;
     this.exitLaneBusy=true;try{const pending=this.s.statusRows('live-order','confirming');const now=this.clock();const due=this.s.statusRows('live-position','open').filter(p=>!pending.some(o=>o.ca===p.ca)&&now-(p.checkedAt??0)>=5000).sort((a,b)=>Number(!!b.exitReason)-Number(!!a.exitReason)||(a.checkedAt??0)-(b.checkedAt??0));if(due[0])await this.checkExit(due[0]);}finally{this.exitLaneBusy=false;}
+  }
+  // Independent of the entry/execute request: its HTTP response may arrive
+  // after the chain receipt. Never resend a transaction from this lane.
+  async settlementTick(){
+    if(this.disposed||this.settlementBusy||!this.wallet||this.error||this.env.ENABLE_LIVE_TRADING!=='true')return;
+    this.settlementBusy=true;
+    try{await this.reconcile();await this.exitTick();}finally{this.settlementBusy=false;}
   }
   async checkExit(position) {
     this.exitLocks??=new Set();if(this.exitLocks.has(position.ca))return;
@@ -152,28 +159,28 @@ export class LiveTrading {
     }
     migrateLiveExit(position);
     if (this.clock() - position.openedAt >= 1800000) position.exitReason ??= '最大持仓时间 30 分钟';
-    position.checkedAt = this.clock(); this.s.put('live-position', position.ca, position);
+    position.checkedAt = this.clock(); position.firstQuoteRequestedAt??=position.checkedAt; this.s.put('live-position', position.ca, position);
     try {
       const q = await this.jup.order(position.ca, SOL, position.quantity, 'sell', this.wallet.address, this.slippageBps);
       const value = Number(netQuoteLamports(q));
       if (!Number.isSafeInteger(value)) throw Error('卖出报价金额超出范围');
       const reason = position.exitReason ?? exitReason(position, value, this.clock());
       if(reason&&!position.exitTriggeredAt){position.exitTriggeredAt=this.clock();position.exitTriggerEvidence={netLamports:value,costLamports:position.costLamports,highLamports:position.highLamports,quoteAt:q.receivedAt??this.clock(),reason,policy:position.exitPolicy??null};}
-      Object.assign(position, {markLamports:value, quoteAt:this.clock(), quoteError:null, exitReason:reason});
+      Object.assign(position, {markLamports:value, quoteAt:this.clock(), firstValidQuoteAt:position.firstValidQuoteAt??this.clock(), quoteError:null, exitReason:reason});
       this.s.put('live-position', position.ca, position);
       if (!reason) return;
       const intent = {id:'sell:' + position.ca + ':' + this.clock(), ca:position.ca, symbol:position.symbol, strategy:position.strategy??null, exitPolicy:position.exitPolicy??null, exitTriggerEvidence:position.exitTriggerEvidence??null, source:position.source, quoteMint:position.quoteMint??null, quoteSymbol:position.quoteSymbol??null, side:'sell', at:this.clock(), status:'preparing', inputAmount:position.quantity, reason};
       this.s.put('live-order', intent.id, intent);
       try {await this.submit(intent, q);}
-      catch (e) {if (this.s.get('live-order', intent.id)?.status !== 'confirming') this.s.put('live-order', intent.id, {...intent, status:'skipped', reason:e.message,diagnostic:e.diagnostic??null}); throw e;}
-    } catch (e) {this.s.put('live-position', position.ca, {...position, quoteError:e.message});}
+      catch (e) {if (!['confirming','confirmed','failed'].includes(this.s.get('live-order', intent.id)?.status)) this.s.put('live-order', intent.id, {...intent, status:'skipped', reason:e.message,diagnostic:e.diagnostic??null}); throw e;}
+    } catch (e) {const current=this.s.get('live-position',position.ca);if(current?.status==='open')this.s.put('live-position', position.ca, {...current, quoteError:e.message});}
   }
   async submit(intent, quote) {
     intent.route=quotedRoute(quote);
     intent.prepareStartedAt=this.clock();
     const signed = await this.wallet.prepare(quote, intent.side, this.maxFeeLamports);
     if (intent.side === 'buy' && (this.collectorRunning===false || !this.state().acceptEntries || !liveCEntry(this.s.get('live-signal',intent.ca),this.state(),this.clock()))) throw Error('签名后入场已暂停或过期');
-    const order = {...intent, preparedAt:this.clock(), ...signed, requestId:quote.requestId, lastValidBlockHeight:quote.lastValidBlockHeight, status:'confirming', quoteAt:quote.receivedAt, quotedOut:quote.outAmount, minimumOut:quote.otherAmountThreshold};
+    const order = {...intent, exitReason:intent.exitReason??intent.reason, preparedAt:this.clock(), ...signed, requestId:quote.requestId, lastValidBlockHeight:quote.lastValidBlockHeight, status:'confirming', quoteAt:quote.receivedAt, quotedOut:quote.outAmount, minimumOut:quote.otherAmountThreshold};
     // Persist before any broadcast. A crash from here never causes automatic resubmission.
     this.s.put('live-order', order.id, order);
     order.broadcastAt=this.clock();this.s.put('live-order',order.id,order);
@@ -182,19 +189,26 @@ export class LiveTrading {
     this.s.put('live-order', order.id, {...latest,executeReturnedAt:this.clock(),...(latest.status==='confirming'?{reason:result.message,exitReason:intent.reason}:{})});
   }
   async reconcile() {
+    if(this.reconcileBusy||this.disposed)return;
+    this.reconcileBusy=true;
+    try{
     for (const order of this.s.statusRows('live-order','confirming')) {
-      if (this.clock() - (order.reconciledAt ?? 0) < 5000) continue;
+      const interval=this.clock()-(order.broadcastAt??order.at??0)<30000?1000:5000;
+      if (order.reconciledAt!=null&&this.clock() - order.reconciledAt < interval) continue;
       order.reconciledAt = this.clock(); this.s.put('live-order', order.id, order);
       let receipt;
       try {receipt = await this.wallet.receipt(order);} catch(e) {this.reconcileError(order,e);continue;}
       if (!receipt) continue;
-      const {signedTransaction, ...publicOrder} = order;
+      // execute() may have completed while receipt RPC was in flight.
+      const latest=this.s.get('live-order',order.id);
+      if(latest?.status!=='confirming')continue;
+      const {signedTransaction, ...publicOrder} = latest;
       this.s.db.exec('BEGIN');
       try {
         this.s.put('live-order', order.id, {...publicOrder, status:receipt.failed ? 'failed' : 'confirmed', reconcileError:null,reconcileRequired:false,...(publicOrder.reconcileRequired?{reason:receipt.failed?'链上交易失败':'链上与账务核对完成'}:{}), receipt, confirmedAt:this.clock()});
         if (!receipt.failed) {
           if (order.side === 'buy') this.s.put('live-position', order.ca, {ca:order.ca, symbol:order.symbol, source:order.source, strategy:order.strategy??null, exitPolicy:order.exitPolicy??null, quoteMint:order.quoteMint??null, quoteSymbol:order.quoteSymbol??null, buyRoute:order.route??null, status:'open', quantity:receipt.quantity,
-            costLamports:-receipt.solDelta, buyCashbackLamports:receipt.cashbackLamports??0, openedAt:receipt.at, buySignature:order.signature, highLamports:0, trailingActive:false});
+            costLamports:-receipt.solDelta, buyCashbackLamports:receipt.cashbackLamports??0, openedAt:receipt.at, managementStartedAt:this.clock(),receiptCommitment:receipt.commitment??null, buySignature:order.signature, highLamports:0, trailingActive:false});
           else {
             const p = this.s.get('live-position', order.ca);
             if (!p || receipt.quantity !== p.quantity) throw Error('卖出回执数量不一致');
@@ -208,9 +222,11 @@ export class LiveTrading {
         this.s.db.exec('COMMIT');
       } catch (e) {this.s.db.exec('ROLLBACK');this.reconcileError(order,e);}
     }
+    }finally{this.reconcileBusy=false;}
   }
   reconcileError(order,error){
     const current=this.s.get('live-order',order.id)??order;
+    if(current.status!=='confirming')return;
     const message=String(redact(error?.message??'对账失败')).slice(0,500);
     const evidence=error?.code==='RECEIPT_ACCOUNTING_REVIEW'?redact(error.diagnostic):current.reconciliationEvidence??null;
     this.s.put('live-order',order.id,{...current,reconcileError:message,reconcileRequired:true,
