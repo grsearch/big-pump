@@ -1,3 +1,4 @@
+import {flowSummary} from './token-flow.mjs';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { Store } from './store.mjs';
@@ -20,7 +21,7 @@ worker.onDiscoveryControl=running=>{live.notify(running);discovery.notify(runnin
 const origins=new Set(['http://localhost:3000','http://127.0.0.1:3000',`http://localhost:${port}`,`http://127.0.0.1:${port}`]);
 export const server=createServer(async(req,res)=>{const origin=req.headers.origin;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');if(!['127.0.0.1','localhost'].includes((req.headers.host??'').split(':')[0])){res.writeHead(403);res.end('{}');return;}if(origin&&!origins.has(origin)){res.writeHead(403);res.end('{}');return;}if(origin)res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Vary','Origin');res.setHeader('Access-Control-Allow-Headers','Content-Type');res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
  try{const path=new URL(req.url,'http://localhost').pathname;if(req.method==='GET'&&path==='/api/dashboard'){res.end(await dashboard.json());return;}
- if(req.method==='GET'&&path.startsWith('/api/token/')){const ca=decodeURIComponent(path.slice(11));const token=store.get('token',ca);if(!token){res.writeHead(404);res.end(JSON.stringify({error:'代币已退出观察列表'}));return;}res.end(JSON.stringify(token));return;}
+ if(req.method==='GET'&&path.startsWith('/api/token/')){const ca=decodeURIComponent(path.slice(11));const token=store.get('token',ca);if(!token){res.writeHead(404);res.end(JSON.stringify({error:'代币已退出观察列表'}));return;}res.end(JSON.stringify({...token,flow:flowSummary(store,token)}));return;}
  if(req.method==='GET'&&path.startsWith('/api/posts/')){res.end(JSON.stringify(store.posts(decodeURIComponent(path.slice(11))).slice(0,200)));return;}
  if(req.method!=='POST'||!req.headers['content-type']?.startsWith('application/json')){res.writeHead(404);res.end('{}');return;}let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>200000)throw Error('请求内容过大');}const data=JSON.parse(raw||'{}');let result={ok:true};
  if(path==='/api/rules'){store.put('config','rules',validateRules(data));worker.reassessWallets();store.event('rules','监控规则已更新');}

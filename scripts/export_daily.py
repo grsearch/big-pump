@@ -33,7 +33,7 @@ def export(db_path,out,end):
         # Old buys supply cost basis for exits in this window.
         ids={d.get('id') for d in orders}
         orders += [{**d,'contextOnly':True} for k,i,d in rows if k=='live-order' and d.get('ca') in cas and d.get('id') not in ids]
-        context=[{'kind':k,'id':i,'data':d} for k,i,d in rows if k in ['token','token-reference','stonk-creation','wallet','coverage','ai-result','event','shadow-run','history-reference','config'] and (k not in ['config'] or i in ['rules','live-trading'])]
+        context=[{'kind':k,'id':i,'data':d} for k,i,d in rows if k in ['flow-trade','flow-scan','token','token-reference','stonk-creation','wallet','coverage','ai-result','event','shadow-run','history-reference','config'] and (k not in ['config'] or i in ['rules','live-trading']) and (k!='flow-trade' or start<=d.get('at',0)<end)]
         audit=[]
         if snap.execute("SELECT name FROM sqlite_master WHERE name='audit'").fetchone():
             audit=[{'seq':seq,'at':at,'kind':k,'ca':ca,'data':clean(json.loads(d))} for seq,at,k,ca,d in snap.execute('SELECT seq,at,kind,ca,data FROM audit WHERE at>=? AND at<? ORDER BY seq',(start,end))]
